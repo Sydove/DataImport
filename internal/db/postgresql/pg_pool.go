@@ -4,9 +4,9 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/spf13/viper"
 )
@@ -51,17 +51,35 @@ type Record struct {
 func BatchInsert(rows []Record) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
-	batch := &pgx.Batch{}
-	query := `INSERT INTO article (created_at, updated_at,title,content,account_id,origin_id) VALUES ($1, $2, $3, $4, $5, $6)`
-	for _, item := range rows {
-		batch.Queue(query, item.CreatedAt, item.UpdatedAt, item.Title, item.Content, item.AccountId, item.OriginId)
+
+	if len(rows) == 0 {
+		return nil
 	}
-	results := Pool.SendBatch(ctx, batch)
-	defer results.Close()
-	_, err := results.Exec()
+
+	// 构建批量插入 SQL
+	baseQuery := `INSERT INTO article (created_at, updated_at, title, content, account_id, origin_id) VALUES `
+	valueStrings := make([]string, 0, len(rows))
+	valueArgs := make([]interface{}, 0, len(rows)*6)
+
+	for i, item := range rows {
+		// 每 6 个参数一组
+		start := i*6 + 1
+		valueStrings = append(valueStrings,
+			fmt.Sprintf("($%d, $%d, $%d, $%d, $%d, $%d)",
+				start, start+1, start+2, start+3, start+4, start+5,
+			),
+		)
+		valueArgs = append(valueArgs,
+			item.CreatedAt, item.UpdatedAt, item.Title, item.Content, item.AccountId, item.OriginId,
+		)
+	}
+
+	query := baseQuery + strings.Join(valueStrings, ",")
+	_, err := Pool.Exec(ctx, query, valueArgs...)
 	if err != nil {
-		return fmt.Errorf("batch exec error: %w", err)
+		return fmt.Errorf("batch insert error: %w", err)
 	}
-	fmt.Println("batch insert success")
+
+	fmt.Printf("批量插入成功: %d 条记录\n", len(rows))
 	return nil
 }
