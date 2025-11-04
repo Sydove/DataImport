@@ -90,7 +90,7 @@ func readFile(filepath string, jobs chan<- Message) {
 	}
 	defer file.Close()
 	scanner := bufio.NewScanner(file)
-	maxLineLength := 1024 * 1024 * 4
+	maxLineLength := 1024 * 1024 * 20
 	scanner.Buffer(make([]byte, 0, maxLineLength), maxLineLength)
 	results := make([]postgresql.Record, 0, BatchSize)
 	for scanner.Scan() {
