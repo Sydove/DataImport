@@ -32,7 +32,7 @@ type Message struct {
 }
 
 func main() {
-
+	start := time.Now()
 	err := postgresql.InitDB()
 	if err != nil {
 		fmt.Printf("init postgresql failed: %v", err)
@@ -55,6 +55,8 @@ func main() {
 	}()
 
 	wg.Wait()
+	elapsed := time.Since(start) // 计算耗时
+	fmt.Printf("程序总共耗时: %v\n", elapsed)
 }
 
 func producer(workdir string, jobs chan<- Message) {
