@@ -7,7 +7,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -90,58 +89,39 @@ func readFile(filepath string, jobs chan<- Message) {
 		return
 	}
 	defer file.Close()
-
-	reader := bufio.NewReader(file)
+	scanner := bufio.NewScanner(file)
+	maxLineLength := 1024 * 1024 * 24
+	scanner.Buffer(make([]byte, 0, maxLineLength), maxLineLength)
 	results := make([]postgresql.Record, 0, BatchSize)
+	for scanner.Scan() {
+		// 发送到channel
+		if len(results) == BatchSize {
+			jobs <- Message{data: results, filename: filepath}
+			results = make([]postgresql.Record, 0, BatchSize)
+		}
 
-	for {
-		// 按行读取（直到 '\n'）
-		lineBytes, err := reader.ReadBytes('\n')
-
-		// 去掉换行符与空格
-		lineBytes = bytes.TrimSpace(lineBytes)
-
-		// 清理无效 UTF-8 字节（如 0x00）
-		// 第二个参数 nil 表示直接丢弃非法字节
+		lineBytes := scanner.Bytes()
 		lineBytes = bytes.ToValidUTF8(lineBytes, nil)
 
-		// 如果当前读取的内容非空，尝试解析
-		if len(lineBytes) > 0 {
-			var record postgresql.Record
-			if err := json.Unmarshal(lineBytes, &record); err != nil {
-				fmt.Println("解析 JSON 时出错:", err)
-			} else {
-				updateDefaultMsg(&record)
-				results = append(results, record)
-			}
+		var record postgresql.Record
+		if err := json.Unmarshal(lineBytes, &record); err != nil {
+			fmt.Println("解析 JSON 时出错:", err)
+			continue
 		}
-
-		// 达到批量大小，发送一批到 channel
-		if len(results) >= BatchSize {
-			batch := make([]postgresql.Record, len(results))
-			copy(batch, results)
-			jobs <- Message{data: batch, filename: filepath}
-			results = results[:0]
-		}
-
-		// 处理 EOF（文件结束）
-		if err == io.EOF {
-			break
-		}
-		// 其他错误（比如磁盘IO错误）
-		if err != nil {
-			fmt.Println("读取文件出错:", err)
-			break
-		}
+		fmt.Printf("line:%s\n", lineBytes)
+		updateDefaultMsg(&record)
+		results = append(results, record)
 	}
-
-	// 文件读完后，发送最后剩余的一批
+	// 发送最后一批数据
 	if len(results) > 0 {
-		batch := make([]postgresql.Record, len(results))
-		copy(batch, results)
-		jobs <- Message{data: batch, filename: filepath}
+		jobs <- Message{data: results, filename: filepath}
 	}
 
+	// 检查是否有扫描错误
+	if err := scanner.Err(); err != nil {
+		fmt.Println("扫描文件时出错:", err)
+		return
+	}
 	fmt.Println("文件读取完成:", filepath)
 }
 
