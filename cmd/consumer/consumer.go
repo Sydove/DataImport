@@ -108,7 +108,6 @@ func readFile(filepath string, jobs chan<- Message) {
 			fmt.Println("解析 JSON 时出错:", err)
 			continue
 		}
-		fmt.Printf("line:%s\n", lineBytes)
 		updateDefaultMsg(&record)
 		results = append(results, record)
 	}
