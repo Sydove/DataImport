@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
@@ -123,6 +124,8 @@ func updateDefaultMsg(record *postgresql.Record) {
 	setTitle(record)
 	record.Title = string(bytes.ToValidUTF8([]byte(record.Title), []byte{}))
 	record.Content = string(bytes.ToValidUTF8([]byte(record.Content), []byte{}))
+	record.Title = strings.ReplaceAll(record.Title, "\x00", "")
+	record.Content = strings.ReplaceAll(record.Content, "\x00", "")
 }
 
 func setTitle(record *postgresql.Record) {
