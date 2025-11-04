@@ -26,6 +26,11 @@ const (
 	WorkerCount = 4
 )
 
+type Message struct {
+	data     []postgresql.Record
+	filename string
+}
+
 func main() {
 
 	err := postgresql.InitDB()
@@ -35,7 +40,7 @@ func main() {
 	}
 
 	workdir := os.Args[1]
-	jobs := make(chan []postgresql.Record, BatchSize)
+	jobs := make(chan Message, BatchSize)
 
 	wg := &sync.WaitGroup{}
 	for i := 0; i < WorkerCount; i++ {
@@ -52,7 +57,7 @@ func main() {
 	wg.Wait()
 }
 
-func producer(workdir string, jobs chan<- []postgresql.Record) {
+func producer(workdir string, jobs chan<- Message) {
 	// 扫描文件总数
 	files, err := filepath.Glob(workdir + "/*.jsonl")
 	if err != nil {
@@ -64,18 +69,20 @@ func producer(workdir string, jobs chan<- []postgresql.Record) {
 	}
 }
 
-func consumer(wg *sync.WaitGroup, jobs <-chan []postgresql.Record, idx int) {
+func consumer(wg *sync.WaitGroup, jobs <-chan Message, idx int) {
 	defer wg.Done()
-	for batch := range jobs {
+	for message := range jobs {
+		batch := message.data
+		filename := message.filename
 		err := postgresql.BatchInsert(batch)
 		if err != nil {
 			fmt.Println("批量插入时出错:", err)
 		}
-		fmt.Printf("work_%d: 插入:%d条数据\n", idx, len(batch))
+		fmt.Printf("work_%d,文件:%s 插入:%d条数据\n", idx, filename, len(batch))
 	}
 }
 
-func readFile(filepath string, jobs chan<- []postgresql.Record) {
+func readFile(filepath string, jobs chan<- Message) {
 	file, err := os.Open(filepath)
 	if err != nil {
 		fmt.Println("打开文件时出错:", err)
@@ -88,8 +95,8 @@ func readFile(filepath string, jobs chan<- []postgresql.Record) {
 	results := make([]postgresql.Record, 0, BatchSize)
 	for scanner.Scan() {
 		// 发送到channel
-		if len(results) == BatchSize-1 {
-			jobs <- results
+		if len(results) == BatchSize {
+			jobs <- Message{data: results, filename: filepath}
 			results = make([]postgresql.Record, 0, BatchSize)
 		}
 
@@ -106,7 +113,7 @@ func readFile(filepath string, jobs chan<- []postgresql.Record) {
 	}
 	// 发送最后一批数据
 	if len(results) > 0 {
-		jobs <- results
+		jobs <- Message{data: results, filename: filepath}
 	}
 
 	// 检查是否有扫描错误
