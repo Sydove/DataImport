@@ -1,19 +1,22 @@
+package main
+
 import (
 	"bufio"
 	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
 	"reflect"
 	"strings"
-	"sync"
 	"time"
 
 	"DataImport/internal/db/postgresql"
 )
 
-// -------------------- 辅助函数 --------------------
+const (
+	BatchSize   = 2000
+	WorkerCount = 4
+) // -------------------- 辅助函数 --------------------
 
 // 递归遍历结构体/切片/map 等，清理所有 string 字段：
 // - bytes.ToValidUTF8 -> 修复非法 UTF-8 字节
