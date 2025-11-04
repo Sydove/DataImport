@@ -39,7 +39,8 @@ func InitDB() error {
 }
 
 type Record struct {
-	Content   string    `json:"text"`
+	Content   string    `json:"content"`
+	Text      string    `json:"text"`
 	OriginId  string    `json:"id"`
 	Title     string    `json:"title"`
 	CreatedAt time.Time `json:"created_at"`

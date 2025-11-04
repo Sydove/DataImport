@@ -129,6 +129,9 @@ func updateDefaultMsg(record *postgresql.Record) {
 	record.CreatedAt = time.Now()
 	record.UpdatedAt = time.Now()
 	record.AccountId = 1
+	if record.Content == "" {
+		record.Content = record.Text
+	}
 	setTitle(record)
 	record.Title = string(bytes.ToValidUTF8([]byte(record.Title), []byte{}))
 	record.Content = string(bytes.ToValidUTF8([]byte(record.Content), []byte{}))
