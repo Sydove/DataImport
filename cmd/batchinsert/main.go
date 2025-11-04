@@ -22,7 +22,7 @@ import (
 */
 
 const (
-	BatchSize   = 2000
+	BatchSize   = 1000
 	WorkerCount = 4
 )
 

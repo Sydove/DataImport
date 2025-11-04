@@ -49,7 +49,7 @@ type Record struct {
 }
 
 func BatchInsert(rows []Record) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 	batch := &pgx.Batch{}
 	query := `INSERT INTO article (created_at, updated_at,title,content,account_id,origin_id) VALUES ($1, $2, $3, $4, $5, $6)`
@@ -58,10 +58,9 @@ func BatchInsert(rows []Record) error {
 	}
 	results := Pool.SendBatch(ctx, batch)
 	defer results.Close()
-	for range rows {
-		if _, err := results.Exec(); err != nil {
-			return fmt.Errorf("batch exec error: %w", err)
-		}
+	_, err := results.Exec()
+	if err != nil {
+		return fmt.Errorf("batch exec error: %w", err)
 	}
 	fmt.Println("batch insert success")
 	return nil
