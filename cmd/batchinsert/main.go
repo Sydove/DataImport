@@ -23,7 +23,7 @@ import (
 
 const (
 	BatchSize   = 1000
-	WorkerCount = 4
+	WorkerCount = 8
 )
 
 type Message struct {
@@ -40,7 +40,7 @@ func main() {
 	}
 
 	workdir := os.Args[1]
-	jobs := make(chan Message, BatchSize)
+	jobs := make(chan Message, WorkerCount)
 
 	wg := &sync.WaitGroup{}
 	for i := 0; i < WorkerCount; i++ {
