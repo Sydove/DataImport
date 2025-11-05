@@ -3,6 +3,7 @@ package main
 import (
 	"DataImport/internal/db/postgresql"
 	_ "DataImport/internal/pkg/config"
+	"DataImport/internal/pkg/utils"
 	"bufio"
 	"bytes"
 	"encoding/json"
@@ -14,16 +15,9 @@ import (
 	"time"
 )
 
-/*
-1.扫描文件总数
-2.遍历文件，读取文件内容
-3.解析文件内容，转换为数据库模型
-4.写入数据库
-*/
-
 const (
 	BatchSize   = 1000
-	WorkerCount = 8
+	WorkerCount = 6
 )
 
 type Message struct {
@@ -124,6 +118,7 @@ func readFile(filepath string, jobs chan<- Message) {
 		return
 	}
 	fmt.Println("文件读取完成:", filepath)
+	utils.WriteToFile(filepath)
 }
 
 func updateDefaultMsg(record *postgresql.Record) {
