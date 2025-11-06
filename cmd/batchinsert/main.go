@@ -107,6 +107,9 @@ func readFile(filepath string, jobs chan<- Message) {
 			continue
 		}
 		updateDefaultMsg(&record)
+		if record.Content == "" || record.Title == "" {
+			continue
+		}
 		results = append(results, record)
 	}
 	// 发送最后一批数据

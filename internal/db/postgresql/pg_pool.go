@@ -173,9 +173,9 @@ func BatchCopyInsert(rows []Record) error {
 	// 使用 CopyFrom 执行批量导入
 	copyCount, err := conn.Conn().CopyFrom(
 		ctx,
-		pgx.Identifier{"article"},                                                           // 表名
+		pgx.Identifier{"article"}, // 表名
 		[]string{"created_at", "updated_at", "title", "content", "account_id", "origin_id"}, // 列名
-		pgx.CopyFromRows(data),                                                              // 数据
+		pgx.CopyFromRows(data), // 数据
 	)
 	if err != nil {
 		return fmt.Errorf("CopyFrom 执行失败: %w", err)
