@@ -59,7 +59,7 @@ func producer(workdir string, jobs chan<- Message) {
 	if err != nil {
 		panic(err)
 	}
-	fmt.Println(files)
+	fmt.Printf("扫描到的文件总数: %d\n", len(files))
 	for _, filepath := range files {
 		readFile(filepath, jobs)
 	}
