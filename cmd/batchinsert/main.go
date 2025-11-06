@@ -16,7 +16,7 @@ import (
 )
 
 const (
-	BatchSize   = 1000
+	BatchSize   = 3000
 	WorkerCount = 6
 )
 
@@ -70,7 +70,9 @@ func consumer(wg *sync.WaitGroup, jobs <-chan Message, idx int) {
 	for message := range jobs {
 		batch := message.data
 		filename := message.filename
-		err := postgresql.BatchInsert(batch)
+		//err := postgresql.BatchInsert(batch)
+		//err := postgresql.BatchInsertWithParams(batch)
+		err := postgresql.BatchCopyInsert(batch)
 		if err != nil {
 			fmt.Println("批量插入时出错:", err)
 		}
