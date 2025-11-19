@@ -1,6 +1,7 @@
 package postgresql
 
 import (
+	redisPool "DataImport/internal/db/redis"
 	"context"
 	"fmt"
 	"log"
@@ -183,4 +184,126 @@ func BatchCopyInsert(rows []Record) error {
 
 	fmt.Printf("批量导入成功，共导入 %d 条记录\n", copyCount)
 	return nil
+}
+
+// StreamReadArticle cursor流式读取 2m8.380 执行效率更低相比ID逻辑分页
+//
+//	@Description:
+//	@return []Record
+func StreamReadArticle() []Record {
+	ctx, cancel := context.WithTimeout(context.Background(), 120000*time.Second)
+	defer cancel()
+	conn, err := Pool.Acquire(ctx)
+	if err != nil {
+		return []Record{}
+	}
+	defer conn.Release()
+
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		return []Record{}
+	}
+	defer tx.Rollback(ctx)
+
+	cursorName := "data_cursor"
+	query := fmt.Sprintf(`
+		DECLARE %s CURSOR FOR
+		SELECT id, title FROM article ORDER BY id
+	`, cursorName)
+	_, err = tx.Exec(ctx, query)
+	if err != nil {
+		log.Fatalf("failed to declare cursor: %v", err)
+	}
+	batchSize := 10000
+	total := 0
+
+	for {
+		//批量拉取数据
+		rows, err := tx.Query(ctx, fmt.Sprintf("FETCH FORWARD %d FROM %s", batchSize, cursorName))
+		if err != nil {
+			log.Fatalf("fetch failed: %v", err)
+		}
+
+		count := 0
+		for rows.Next() {
+			var id int
+			var content string
+			if err := rows.Scan(&id, &content); err != nil {
+				log.Fatalf("scan failed: %v", err)
+			}
+			// 这里可以进行处理，例如去重、写Redis、导出文件等
+			count++
+		}
+		rows.Close()
+
+		if count == 0 {
+			break // 已经读完
+		}
+
+		total += count
+		fmt.Printf("已读取 %d 行\n", total)
+	}
+
+	//关闭游标并提交事务
+	_, _ = tx.Exec(ctx, fmt.Sprintf("CLOSE %s", cursorName))
+	if err := tx.Commit(ctx); err != nil {
+		log.Fatalf("commit failed: %v", err)
+	}
+
+	fmt.Println("流式读取完成 ✅")
+	return []Record{}
+}
+
+// ReadArticleById  根据id翻页读取数据 1m44.41987
+//
+//	@Description:
+//	@return []Record
+func ReadArticleById() []Record {
+	ctx, cancel := context.WithTimeout(context.Background(), 600*time.Second)
+	defer cancel()
+
+	pool := redisPool.InitPool()
+	defer pool.Close()
+	redisConn := pool.Get()
+	defer redisConn.Close()
+
+	// 清空集合
+	redisConn.Do("DEL", "articles")
+
+	total, pageSize := 12002284, 10000
+	totalPage := (total + pageSize - 1) / pageSize
+	distinctMap := make(map[string]int64)
+
+	for page := 0; page < totalPage; page++ {
+		startId := page*pageSize + 1
+		query, err := Pool.Query(ctx, "SELECT origin_id, title FROM article WHERE id >= $1 LIMIT $2", startId, pageSize)
+		if err != nil {
+			fmt.Printf("query failed: %v\n", err)
+			return []Record{}
+		}
+
+		count := 0
+		for query.Next() {
+			var originId, content string
+			if err := query.Scan(&originId, &content); err != nil {
+				fmt.Printf("scan failed: %v\n", err)
+				return []Record{}
+			}
+			// 去重处理
+			distinctMap[originId] = distinctMap[originId] + 1
+			count++
+		}
+		query.Close()
+		fmt.Printf("处理了%d条数据\n", count)
+
+		if count == 0 {
+			break
+		}
+	}
+	for k, v := range distinctMap {
+		if v >= 1 {
+			fmt.Printf("origin_id: %s, count: %d\n", k, v)
+		}
+	}
+	return []Record{}
 }

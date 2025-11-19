@@ -1,30 +1,32 @@
 package redis
 
 import (
-	"context"
-	"fmt"
+	"time"
 
-	"github.com/redis/go-redis/v9"
+	"github.com/gomodule/redigo/redis"
 )
 
-func InitRedisClient() {
-	ctx := context.Background()
+func InitPool() *redis.Pool {
+	return &redis.Pool{
+		MaxIdle:     10,
+		MaxActive:   50,
+		IdleTimeout: 240 * time.Second,
+		Dial: func() (redis.Conn, error) {
+			c, err := redis.Dial("tcp", "192.168.31.195:30777")
+			if err != nil {
+				return nil, err
+			}
 
-	rdb := redis.NewClient(&redis.Options{
-		Addr:     "192.168.31.195:30777",
-		Password: "lql@123",
-		DB:       0, // 默认数据库
-	})
+			if _, err := c.Do("AUTH", "lql@123"); err != nil {
+				c.Close()
+				return nil, err
+			}
 
-	err := rdb.Set(ctx, "key", "value", 0).Err()
-	if err != nil {
-		panic(err)
+			return c, nil
+		},
+		TestOnBorrow: func(c redis.Conn, t time.Time) error {
+			_, err := c.Do("PING")
+			return err
+		},
 	}
-
-	val, err := rdb.Get(ctx, "key").Result()
-	if err != nil {
-		panic(err)
-	}
-
-	fmt.Println("key:", val)
 }
