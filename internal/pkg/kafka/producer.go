@@ -54,22 +54,23 @@ func (p *Producer) handleDeliveryReports() {
 			if ev.TopicPartition.Error != nil {
 				// 发送失败
 				atomic.AddInt64(&p.tracker.failedCount, 1)
-				fmt.Printf("❌ 消息发送失败: %v\n", ev.TopicPartition.Error)
+				fmt.Printf("消息发送失败: %v\n", ev.TopicPartition.Error)
 			} else {
 				// 发送成功
 				atomic.AddInt64(&p.tracker.successCount, 1)
 			}
 		case kafka.Error:
-			fmt.Printf("⚠️ Kafka Error: %v\n", ev)
+			fmt.Printf("Kafka Error: %v\n", ev)
 		}
 	}
-	fmt.Println("📢 Delivery report handler 退出")
+	fmt.Println("Delivery report handler 退出")
 }
 
 // ProduceWithBackpressure 带背压控制的消息发送
 func (p *Producer) ProduceWithBackpressure(ctx context.Context, msg *kafka.Message) error {
 	// 检查待确认消息数量
 	for {
+		// 原子读取,避免竞态条件
 		sent := atomic.LoadInt64(&p.tracker.sentCount)
 		success := atomic.LoadInt64(&p.tracker.successCount)
 		failed := atomic.LoadInt64(&p.tracker.failedCount)
@@ -83,7 +84,7 @@ func (p *Producer) ProduceWithBackpressure(ctx context.Context, msg *kafka.Messa
 			// 只在第一次触发背压时打印
 			hitCount := atomic.LoadInt64(&p.tracker.backpressureHit)
 			if hitCount == 1 || hitCount%100 == 0 {
-				fmt.Printf("🔴 背压触发 (第 %d 次): 待确认 %d 条，队列 %d 条，等待处理...\n",
+				fmt.Printf("背压触发 (第 %d 次): 待确认 %d 条，队列 %d 条，等待处理...\n",
 					hitCount, pending, queueLen)
 			}
 
@@ -141,16 +142,16 @@ func (p *Producer) WaitForCompletion(ctx context.Context) error {
 			elapsed := time.Since(startTime)
 			backpressureHits := atomic.LoadInt64(&p.tracker.backpressureHit)
 
-			fmt.Printf("\n✅ 全部完成! 总数: %d, 成功: %d, 失败: %d, 耗时: %v\n",
+			fmt.Printf("\n 全部完成! 总数: %d, 成功: %d, 失败: %d, 耗时: %v\n",
 				sent, success, failed, elapsed)
-			fmt.Printf("📊 背压统计: 触发 %d 次\n", backpressureHits)
+			fmt.Printf(" 背压统计: 触发 %d 次\n", backpressureHits)
 
 			return nil
 		}
 
 		select {
 		case <-ctx.Done():
-			return fmt.Errorf("⏱️ 超时: 发送 %d 条，完成 %d 条 (成功 %d, 失败 %d), 队列中 %d 条",
+			return fmt.Errorf(" 超时: 发送 %d 条，完成 %d 条 (成功 %d, 失败 %d), 队列中 %d 条",
 				sent, completed, success, failed, queueLen)
 
 		case <-ticker.C:
@@ -171,7 +172,7 @@ func (p *Producer) WaitForCompletion(ctx context.Context) error {
 
 				backpressureHits := atomic.LoadInt64(&p.tracker.backpressureHit)
 
-				fmt.Printf("📊 进度: %.1f%% (%d/%d) | 成功: %d, 失败: %d | 待确认: %d | 队列: %d | 背压: %d 次 | 速率: %.0f msg/s | 耗时: %v | ETA: %v\n",
+				fmt.Printf("进度: %.1f%% (%d/%d) | 成功: %d, 失败: %d | 待确认: %d | 队列: %d | 背压: %d 次 | 速率: %.0f msg/s | 耗时: %v | ETA: %v\n",
 					progress, completed, sent, success, failed, pending, queueLen, backpressureHits, rate,
 					elapsed.Round(time.Second), eta.Round(time.Second))
 

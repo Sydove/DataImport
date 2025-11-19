@@ -46,7 +46,7 @@ func (c *Client) DeleteTopic(topicName string) error {
 		return fmt.Errorf("删除 Topic 失败: %w", err)
 	}
 
-	fmt.Printf("✅ Topic '%s' 删除成功\n", topicName)
+	fmt.Printf("Topic '%s' 删除成功\n", topicName)
 	return nil
 }
 
@@ -57,7 +57,7 @@ func (c *Client) GetClusterMetadata() ([]Message, error) {
 		return nil, fmt.Errorf("获取集群元数据失败: %w", err)
 	}
 
-	fmt.Printf("📊 Broker 数量: %d\n", len(meta.Brokers))
+	fmt.Printf("Broker 数量: %d\n", len(meta.Brokers))
 
 	results := make([]Message, 0)
 	for _, b := range meta.Brokers {
@@ -69,7 +69,7 @@ func (c *Client) GetClusterMetadata() ([]Message, error) {
 		fmt.Printf("  - Broker %d: %s:%d\n", b.ID, b.Host, b.Port)
 	}
 
-	fmt.Printf("📊 Topic 数量: %d\n", len(meta.Topics))
+	fmt.Printf("Topic 数量: %d\n", len(meta.Topics))
 	for topicName := range meta.Topics {
 		fmt.Printf("  - Topic: %s\n", topicName)
 	}

@@ -49,7 +49,7 @@ func main() {
 	go func() {
 		defer wg.Done()
 		if err := runProducer(client); err != nil {
-			fmt.Printf("❌ Producer 错误: %v\n", err)
+			fmt.Printf(" Producer 错误: %v\n", err)
 		}
 	}()
 
@@ -59,14 +59,14 @@ func main() {
 		go func(consumerID int) {
 			defer wg.Done()
 			if err := runConsumer(client, consumerID); err != nil {
-				fmt.Printf("❌ Consumer %d 错误: %v\n", consumerID, err)
+				fmt.Printf("Consumer %d 错误: %v\n", consumerID, err)
 			}
 		}(i)
 	}
 
 	// 6. 等待退出信号
 	<-signalChan
-	fmt.Println("\n🛑 收到退出信号，正在关闭...")
+	fmt.Println("收到退出信号，正在关闭...")
 }
 
 // runProducer 运行 Producer
@@ -87,7 +87,7 @@ func runProducer(client *kafka.Client) error {
 	topicName := "this_topic"
 	messageCount := 101
 
-	fmt.Printf("🚀 开始发送 %d 条消息...\n", messageCount)
+	fmt.Printf("开始发送 %d 条消息...\n", messageCount)
 	startTime := time.Now()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
@@ -114,7 +114,7 @@ func runProducer(client *kafka.Client) error {
 			})
 
 			if err != nil {
-				fmt.Printf("⚠️ 发送失败 [msg-%d]: %v\n", i, err)
+				fmt.Printf("发送失败 [msg-%d]: %v\n", i, err)
 			}
 		}(i)
 	}
@@ -124,11 +124,11 @@ func runProducer(client *kafka.Client) error {
 	submitDuration := time.Since(startTime)
 	sent, _, _, backpressureHits := producer.GetStats()
 
-	fmt.Printf("📝 所有消息已提交到队列，实际提交: %d 条，耗时: %v，背压触发: %d 次\n",
+	fmt.Printf("所有消息已提交到队列，实际提交: %d 条，耗时: %v，背压触发: %d 次\n",
 		sent, submitDuration, backpressureHits)
 
 	// 等待所有消息发送完成
-	fmt.Println("⏳ 等待所有消息确认...")
+	fmt.Println("等待所有消息确认...")
 	waitCtx, waitCancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer waitCancel()
 
@@ -137,7 +137,7 @@ func runProducer(client *kafka.Client) error {
 	}
 
 	totalDuration := time.Since(startTime)
-	fmt.Printf("📈 总耗时: %v (提交: %v, 确认: %v)\n",
+	fmt.Printf("总耗时: %v (提交: %v, 确认: %v)\n",
 		totalDuration, submitDuration, totalDuration-submitDuration)
 
 	return nil
@@ -159,7 +159,7 @@ func runConsumer(client *kafka.Client, consumerID int) error {
 	// 定义消息处理函数
 	handler := func(msg *kafkaGo.Message) error {
 		// 这里可以添加自定义的消息处理逻辑
-		// fmt.Printf("处理消息: %s\n", string(msg.Value))
+		fmt.Printf("处理消息: %s\n", string(msg.Value))
 		return nil
 	}
 

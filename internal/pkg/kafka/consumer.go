@@ -54,7 +54,7 @@ func (c *Consumer) StartConsuming(consumerID int, handler func(msg *kafka.Messag
 			// 处理消息
 			if handler != nil {
 				if err := handler(e); err != nil {
-					fmt.Printf("❌ 处理消息失败: %v\n", err)
+					fmt.Printf("处理消息失败: %v\n", err)
 				}
 			}
 
@@ -78,9 +78,9 @@ func (c *Consumer) StartConsuming(consumerID int, handler func(msg *kafka.Messag
 
 				_, err := c.consumer.CommitOffsets(offsets)
 				if err != nil {
-					fmt.Println("❌ 批量提交失败:", err)
+					fmt.Println("批量提交失败:", err)
 				} else {
-					fmt.Println("✅ 批量提交成功:", offsets)
+					fmt.Println("批量提交成功:", offsets)
 				}
 
 				// 清空计数
@@ -88,15 +88,15 @@ func (c *Consumer) StartConsuming(consumerID int, handler func(msg *kafka.Messag
 			}
 
 		case kafka.AssignedPartitions:
-			fmt.Println("📌 分配分区:", e.Partitions)
+			fmt.Println("分配分区:", e.Partitions)
 			c.consumer.Assign(e.Partitions)
 
 		case kafka.RevokedPartitions:
-			fmt.Println("📌 回收分区")
+			fmt.Println("回收分区")
 			c.consumer.Unassign()
 
 		case kafka.Error:
-			fmt.Println("❌ Kafka Error:", e)
+			fmt.Println("Kafka Error:", e)
 		}
 	}
 }
