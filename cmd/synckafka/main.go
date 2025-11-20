@@ -48,7 +48,7 @@ func main() {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		if err := runProducer(client); err != nil {
+		if err := runProducer(); err != nil {
 			fmt.Printf(" Producer 错误: %v\n", err)
 		}
 	}()
@@ -72,7 +72,7 @@ func main() {
 }
 
 // runProducer 运行 Producer
-func runProducer(client *kafka.Client) error {
+func runProducer() error {
 	// 创建自定义配置的 Producer
 	producer, err := kafka.NewProducer(kafka.ProducerConfig{
 		CompressionType: "snappy",
