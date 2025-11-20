@@ -13,8 +13,9 @@ import (
 type Client struct {
 	producer    *kafka.Producer
 	adminClient *kafka.AdminClient
-	consumers   []*kafka.Consumer
-	mu          sync.RWMutex
+	//consumers   []*kafka.Consumer
+	consumers []*Consumer
+	mu        sync.RWMutex
 }
 
 // NewClient 创建 Kafka 客户端
@@ -42,7 +43,7 @@ func NewClient() (*Client, error) {
 	return &Client{
 		producer:    producer.producer,
 		adminClient: admin,
-		consumers:   make([]*kafka.Consumer, 0),
+		consumers:   make([]*Consumer, 0),
 	}, nil
 }
 
@@ -63,7 +64,7 @@ func NewClientWithConfig(producerConfig ProducerConfig) (*Client, error) {
 	return &Client{
 		producer:    producer.producer,
 		adminClient: admin,
-		consumers:   make([]*kafka.Consumer, 0),
+		consumers:   make([]*Consumer, 0),
 	}, nil
 }
 
@@ -79,6 +80,7 @@ func (c *Client) GetAdminClient() *kafka.AdminClient {
 
 // Close 关闭所有资源
 func (c *Client) Close() error {
+	fmt.Println("关闭所有资源")
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -95,6 +97,7 @@ func (c *Client) Close() error {
 	// 关闭所有 Consumer
 	for _, consumer := range c.consumers {
 		if consumer != nil {
+			fmt.Printf("%+v\n", consumer)
 			consumer.Close()
 		}
 	}
@@ -111,7 +114,7 @@ func getBaseConfig() *kafka.ConfigMap {
 }
 
 // addConsumer 添加 Consumer 到管理列表
-func (c *Client) addConsumer(consumer *kafka.Consumer) {
+func (c *Client) addConsumer(consumer *Consumer) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.consumers = append(c.consumers, consumer)

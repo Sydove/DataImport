@@ -18,7 +18,7 @@ func main() {
 	// 1. 创建 Kafka 客户端
 	client, err := kafka.NewClient()
 	if err != nil {
-		fmt.Printf("❌ 初始化 Kafka 客户端失败: %v\n", err)
+		fmt.Printf("初始化 Kafka 客户端失败: %v\n", err)
 		panic(err)
 	}
 	defer client.Close()
@@ -27,7 +27,7 @@ func main() {
 	fmt.Println("═════════ 集群信息 ═════════")
 	_, err = client.GetClusterMetadata()
 	if err != nil {
-		fmt.Printf("❌ 获取集群信息失败: %v\n", err)
+		fmt.Printf("获取集群信息失败: %v\n", err)
 	}
 
 	// 3. 创建 Topic（如果需要）
@@ -37,7 +37,7 @@ func main() {
 	//     ReplicationFactor: 3,
 	// })
 	// if err != nil {
-	//     fmt.Printf("❌ 创建 Topic 失败: %v\n", err)
+	//     fmt.Printf("创建 Topic 失败: %v\n", err)
 	// }
 
 	wg := sync.WaitGroup{}
@@ -54,11 +54,12 @@ func main() {
 	}()
 
 	// 5. 启动多个 Consumer
+	var totalMessages int64 = 0
 	for i := 0; i < 3; i++ {
 		wg.Add(1)
 		go func(consumerID int) {
 			defer wg.Done()
-			if err := runConsumer(client, consumerID); err != nil {
+			if err := runConsumer(client, consumerID, &totalMessages); err != nil {
 				fmt.Printf("Consumer %d 错误: %v\n", consumerID, err)
 			}
 		}(i)
@@ -67,6 +68,7 @@ func main() {
 	// 6. 等待退出信号
 	<-signalChan
 	fmt.Println("收到退出信号，正在关闭...")
+	fmt.Printf("一共消费%d\n", totalMessages)
 }
 
 // runProducer 运行 Producer
@@ -82,10 +84,9 @@ func runProducer(client *kafka.Client) error {
 	if err != nil {
 		return err
 	}
-	defer producer.Close()
 
 	topicName := "this_topic"
-	messageCount := 101
+	messageCount := 100
 
 	fmt.Printf("开始发送 %d 条消息...\n", messageCount)
 	startTime := time.Now()
@@ -96,7 +97,7 @@ func runProducer(client *kafka.Client) error {
 	wg := sync.WaitGroup{}
 
 	// 发送消息
-	for i := 0; i <= 100; i++ {
+	for i := 1; i <= 100; i++ {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
@@ -144,18 +145,16 @@ func runProducer(client *kafka.Client) error {
 }
 
 // runConsumer 运行 Consumer
-func runConsumer(client *kafka.Client, consumerID int) error {
+func runConsumer(client *kafka.Client, consumerID int, total *int64) error {
 	consumer, err := client.CreateConsumer(kafka.ConsumerConfig{
 		GroupID:         "number_one",
 		Topics:          []string{"this_topic"},
 		AutoOffsetReset: "earliest",
-		CommitBatchSize: 10,
+		CommitBatchSize: 11,
 	}, consumerID)
 	if err != nil {
 		return err
 	}
-	defer consumer.Close()
-
 	// 定义消息处理函数
 	handler := func(msg *kafkaGo.Message) error {
 		// 这里可以添加自定义的消息处理逻辑
@@ -164,7 +163,6 @@ func runConsumer(client *kafka.Client, consumerID int) error {
 	}
 
 	// 开始消费
-	consumer.StartConsuming(consumerID, handler)
-
+	consumer.StartConsuming(consumerID, handler, total)
 	return nil
 }

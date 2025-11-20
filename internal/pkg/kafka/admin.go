@@ -26,7 +26,7 @@ func (c *Client) CreateTopic(config TopicConfig) error {
 		return fmt.Errorf("创建 Topic 失败: %w", err)
 	}
 
-	fmt.Printf("✅ Topic '%s' 创建成功 (分区: %d, 副本: %d)\n",
+	fmt.Printf("Topic '%s' 创建成功 (分区: %d, 副本: %d)\n",
 		config.Name, config.NumPartitions, config.ReplicationFactor)
 	return nil
 }
@@ -99,6 +99,6 @@ func (c *Client) CreateConsumer(config ConsumerConfig, consumerID int) (*Consume
 		return nil, err
 	}
 
-	c.addConsumer(consumer.GetConsumer())
+	c.addConsumer(consumer)
 	return consumer, nil
 }
