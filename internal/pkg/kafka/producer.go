@@ -11,12 +11,13 @@ import (
 
 // Producer Kafka Producer 包装
 type Producer struct {
-	producer *kafka.Producer
-	tracker  *ProducerTracker
+	Producer *kafka.Producer
+	Tracker  *ProducerTracker
+	StopCtx  context.Context
 }
 
 // NewProducer 创建 Producer
-func NewProducer(config ProducerConfig) (*Producer, error) {
+func NewProducer(config ProducerConfig, stopCtx context.Context) (*Producer, error) {
 	kafkaConfig := getBaseConfig()
 
 	// 设置 Producer 配置
@@ -34,10 +35,11 @@ func NewProducer(config ProducerConfig) (*Producer, error) {
 	}
 
 	p := &Producer{
-		producer: producer,
-		tracker: &ProducerTracker{
+		Producer: producer,
+		Tracker: &ProducerTracker{
 			maxPending: config.MaxPending,
 		},
+		StopCtx: stopCtx,
 	}
 
 	// 启动 ACK 处理
@@ -48,16 +50,16 @@ func NewProducer(config ProducerConfig) (*Producer, error) {
 
 // handleDeliveryReports 处理消息发送的 ACK
 func (p *Producer) handleDeliveryReports() {
-	for e := range p.producer.Events() {
+	for e := range p.Producer.Events() {
 		switch ev := e.(type) {
 		case *kafka.Message:
 			if ev.TopicPartition.Error != nil {
 				// 发送失败
-				atomic.AddInt64(&p.tracker.failedCount, 1)
+				atomic.AddInt64(&p.Tracker.failedCount, 1)
 				fmt.Printf("消息发送失败: %v\n", ev.TopicPartition.Error)
 			} else {
 				// 发送成功
-				atomic.AddInt64(&p.tracker.successCount, 1)
+				atomic.AddInt64(&p.Tracker.successCount, 1)
 			}
 		case kafka.Error:
 			fmt.Printf("Kafka Error: %v\n", ev)
@@ -71,18 +73,18 @@ func (p *Producer) ProduceWithBackpressure(ctx context.Context, msg *kafka.Messa
 	// 检查待确认消息数量
 	for {
 		// 原子读取,避免竞态条件
-		sent := atomic.LoadInt64(&p.tracker.sentCount)
-		success := atomic.LoadInt64(&p.tracker.successCount)
-		failed := atomic.LoadInt64(&p.tracker.failedCount)
+		sent := atomic.LoadInt64(&p.Tracker.sentCount)
+		success := atomic.LoadInt64(&p.Tracker.successCount)
+		failed := atomic.LoadInt64(&p.Tracker.failedCount)
 		pending := sent - (success + failed)
-		queueLen := int64(p.producer.Len())
+		queueLen := int64(p.Producer.Len())
 
 		// 背压控制：如果待确认消息数超过阈值，等待
-		if pending >= p.tracker.maxPending || queueLen >= p.tracker.maxPending {
-			atomic.AddInt64(&p.tracker.backpressureHit, 1)
+		if pending >= p.Tracker.maxPending || queueLen >= p.Tracker.maxPending {
+			atomic.AddInt64(&p.Tracker.backpressureHit, 1)
 
 			// 只在第一次触发背压时打印
-			hitCount := atomic.LoadInt64(&p.tracker.backpressureHit)
+			hitCount := atomic.LoadInt64(&p.Tracker.backpressureHit)
 			if hitCount == 1 || hitCount%100 == 0 {
 				fmt.Printf("背压触发 (第 %d 次): 待确认 %d 条，队列 %d 条，等待处理...\n",
 					hitCount, pending, queueLen)
@@ -102,23 +104,23 @@ func (p *Producer) ProduceWithBackpressure(ctx context.Context, msg *kafka.Messa
 	}
 
 	// 发送消息
-	err := p.producer.Produce(msg, nil)
+	err := p.Producer.Produce(msg, nil)
 	if err != nil {
 		return fmt.Errorf("提交消息失败: %w", err)
 	}
 
 	// 发送成功，计数 +1
-	atomic.AddInt64(&p.tracker.sentCount, 1)
+	atomic.AddInt64(&p.Tracker.sentCount, 1)
 	return nil
 }
 
 // Produce 普通发送（无背压控制）
 func (p *Producer) Produce(msg *kafka.Message) error {
-	err := p.producer.Produce(msg, nil)
+	err := p.Producer.Produce(msg, nil)
 	if err != nil {
 		return err
 	}
-	atomic.AddInt64(&p.tracker.sentCount, 1)
+	atomic.AddInt64(&p.Tracker.sentCount, 1)
 	return nil
 }
 
@@ -131,16 +133,16 @@ func (p *Producer) WaitForCompletion(ctx context.Context) error {
 	lastReported := int64(0)
 
 	for {
-		sent := atomic.LoadInt64(&p.tracker.sentCount)
-		success := atomic.LoadInt64(&p.tracker.successCount)
-		failed := atomic.LoadInt64(&p.tracker.failedCount)
+		sent := atomic.LoadInt64(&p.Tracker.sentCount)
+		success := atomic.LoadInt64(&p.Tracker.successCount)
+		failed := atomic.LoadInt64(&p.Tracker.failedCount)
 		completed := success + failed
-		queueLen := p.producer.Len()
+		queueLen := p.Producer.Len()
 
 		// 检查是否全部完成
 		if sent > 0 && completed == sent && queueLen == 0 {
 			elapsed := time.Since(startTime)
-			backpressureHits := atomic.LoadInt64(&p.tracker.backpressureHit)
+			backpressureHits := atomic.LoadInt64(&p.Tracker.backpressureHit)
 
 			fmt.Printf("\n 全部完成! 总数: %d, 成功: %d, 失败: %d, 耗时: %v\n",
 				sent, success, failed, elapsed)
@@ -170,7 +172,7 @@ func (p *Producer) WaitForCompletion(ctx context.Context) error {
 					eta = time.Duration(float64(sent-completed)/rate) * time.Second
 				}
 
-				backpressureHits := atomic.LoadInt64(&p.tracker.backpressureHit)
+				backpressureHits := atomic.LoadInt64(&p.Tracker.backpressureHit)
 
 				fmt.Printf("进度: %.1f%% (%d/%d) | 成功: %d, 失败: %d | 待确认: %d | 队列: %d | 背压: %d 次 | 速率: %.0f msg/s | 耗时: %v | ETA: %v\n",
 					progress, completed, sent, success, failed, pending, queueLen, backpressureHits, rate,
@@ -184,10 +186,10 @@ func (p *Producer) WaitForCompletion(ctx context.Context) error {
 
 // GetStats 获取统计信息
 func (p *Producer) GetStats() (sent, success, failed, backpressureHits int64) {
-	return p.tracker.GetStats()
+	return p.Tracker.GetStats()
 }
 
 // Close 关闭 Producer
 func (p *Producer) Close() {
-	p.producer.Close()
+	p.Producer.Close()
 }

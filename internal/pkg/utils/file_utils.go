@@ -1,6 +1,7 @@
 package utils
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -35,4 +36,18 @@ func WriteToFile(filename string) error {
 	} else {
 		return nil
 	}
+}
+
+func ReadJSONFile(filename string) (map[string]interface{}, error) {
+	data, err := os.ReadFile(filename)
+	if err != nil {
+		return nil, fmt.Errorf("读取 JSON 文件失败: %w", err)
+	}
+
+	var mapping map[string]interface{}
+	if err := json.Unmarshal(data, &mapping); err != nil {
+		return nil, fmt.Errorf("解析 JSON 数据失败: %w", err)
+	}
+
+	return mapping, nil
 }

@@ -1,6 +1,8 @@
 package kafka
 
 import (
+	"DataImport/internal/pkg/es"
+	"context"
 	"fmt"
 	"sync/atomic"
 	"time"
@@ -12,11 +14,11 @@ import (
 type Consumer struct {
 	consumer *kafka.Consumer
 	config   ConsumerConfig
-	stopCh   chan struct{}
+	StopCtx  context.Context
 }
 
 // NewConsumer 创建 Consumer
-func NewConsumer(config ConsumerConfig, consumerID int) (*Consumer, error) {
+func NewConsumer(config ConsumerConfig, consumerID int, stopCtx context.Context) (*Consumer, error) {
 	kafkaConfig := getBaseConfig()
 
 	// 设置 Consumer 配置
@@ -36,16 +38,15 @@ func NewConsumer(config ConsumerConfig, consumerID int) (*Consumer, error) {
 		consumer.Close()
 		return nil, fmt.Errorf("订阅 Topic 失败: %w", err)
 	}
-	stopCh := make(chan struct{})
 	return &Consumer{
 		consumer: consumer,
 		config:   config,
-		stopCh:   stopCh,
+		StopCtx:  stopCtx,
 	}, nil
 }
 
 // StartConsuming 开始消费消息
-func (c *Consumer) StartConsuming(consumerID int, handler func(msg *kafka.Message) error, total *int64) {
+func (c *Consumer) StartConsuming(consumerID int, handler func(msg *kafka.Message, esClient *es.ESClient) error, total *int64, esClient *es.ESClient) error {
 	messageCount := 0
 	offsetMap := make(map[kafka.TopicPartition]kafka.Offset)
 	ticker := time.NewTicker(10 * time.Second)
@@ -60,7 +61,7 @@ func (c *Consumer) StartConsuming(consumerID int, handler func(msg *kafka.Messag
 
 				// 处理消息
 				if handler != nil {
-					if err := handler(e); err != nil {
+					if err := handler(e, esClient); err != nil {
 						fmt.Printf("处理消息失败: %v\n", err)
 					}
 				}
@@ -121,7 +122,7 @@ func (c *Consumer) StartConsuming(consumerID int, handler func(msg *kafka.Messag
 					offsetMap = make(map[kafka.TopicPartition]kafka.Offset)
 				}
 			}
-		case <-c.stopCh:
+		case <-c.StopCtx.Done():
 			fmt.Println("程序停止,检查是否还有offset需要提交")
 			var offsets []kafka.TopicPartition
 			for tp, off := range offsetMap {
@@ -135,7 +136,7 @@ func (c *Consumer) StartConsuming(consumerID int, handler func(msg *kafka.Messag
 					fmt.Println("结束程序批量提交成功", offsets)
 				}
 			}
-			return
+			return nil
 		}
 	}
 
@@ -143,7 +144,6 @@ func (c *Consumer) StartConsuming(consumerID int, handler func(msg *kafka.Messag
 
 // Close 关闭 Consumer
 func (c *Consumer) Close() error {
-	close(c.stopCh)
 	return c.consumer.Close()
 }
 

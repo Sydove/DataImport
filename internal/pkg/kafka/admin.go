@@ -93,12 +93,28 @@ func (c *Client) ListTopics() ([]string, error) {
 }
 
 // CreateConsumer 创建 Consumer
-func (c *Client) CreateConsumer(config ConsumerConfig, consumerID int) (*Consumer, error) {
-	consumer, err := NewConsumer(config, consumerID)
+func (c *Client) CreateConsumer(config ConsumerConfig, consumerID int, stopCtx context.Context) (*Consumer, error) {
+	consumer, err := NewConsumer(config, consumerID, stopCtx)
 	if err != nil {
 		return nil, err
 	}
 
 	c.addConsumer(consumer)
 	return consumer, nil
+}
+
+func (c *Client) WaitTopicReady(topic string, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+
+	for time.Now().Before(deadline) {
+		md, err := c.adminClient.GetMetadata(&topic, false, 5_000)
+		if err == nil {
+			if t, ok := md.Topics[topic]; ok && t.Error.Code() == kafka.ErrNoError {
+				// topic 存在且无错误
+				return nil
+			}
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	return fmt.Errorf("topic %s not ready", topic)
 }

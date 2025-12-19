@@ -1,6 +1,7 @@
 package kafka
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"sync"
@@ -11,11 +12,10 @@ import (
 
 // Client Kafka 客户端
 type Client struct {
-	producer    *kafka.Producer
+	producer    *Producer
 	adminClient *kafka.AdminClient
-	//consumers   []*kafka.Consumer
-	consumers []*Consumer
-	mu        sync.RWMutex
+	consumers   []*Consumer
+	mu          sync.RWMutex
 }
 
 // NewClient 创建 Kafka 客户端
@@ -27,49 +27,32 @@ func NewClient() (*Client, error) {
 		return nil, fmt.Errorf("创建 Admin Client 失败: %w", err)
 	}
 
-	// 创建 Producer（使用默认配置）
-	producer, err := NewProducer(ProducerConfig{
-		CompressionType: "snappy",
-		BatchSize:       51200,
-		LingerMs:        10,
-		Acks:            "all",
-		MaxPending:      10000,
-	})
-	if err != nil {
-		admin.Close()
-		return nil, fmt.Errorf("创建 Producer 失败: %w", err)
-	}
-
 	return &Client{
-		producer:    producer.producer,
 		adminClient: admin,
 		consumers:   make([]*Consumer, 0),
 	}, nil
 }
 
 // NewClientWithConfig 使用自定义配置创建 Kafka 客户端
-func NewClientWithConfig(producerConfig ProducerConfig) (*Client, error) {
+func (c *Client) NewClientWithConfig(producerConfig ProducerConfig, stopCtx context.Context) error {
 	adminConfig := getBaseConfig()
 	admin, err := kafka.NewAdminClient(adminConfig)
 	if err != nil {
-		return nil, fmt.Errorf("创建 Admin Client 失败: %w", err)
+		return fmt.Errorf("创建 Admin Client 失败: %w", err)
 	}
 
-	producer, err := NewProducer(producerConfig)
+	producer, err := NewProducer(producerConfig, stopCtx)
 	if err != nil {
 		admin.Close()
-		return nil, fmt.Errorf("创建 Producer 失败: %w", err)
+		return fmt.Errorf("创建 Producer 失败: %w", err)
 	}
 
-	return &Client{
-		producer:    producer.producer,
-		adminClient: admin,
-		consumers:   make([]*Consumer, 0),
-	}, nil
+	c.producer = producer
+	return nil
 }
 
 // GetProducer 获取 Producer
-func (c *Client) GetProducer() *kafka.Producer {
+func (c *Client) GetProducer() *Producer {
 	return c.producer
 }
 
@@ -118,4 +101,8 @@ func (c *Client) addConsumer(consumer *Consumer) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.consumers = append(c.consumers, consumer)
+}
+
+func (c *Client) setProducer(producer *Producer) {
+	c.producer = producer
 }

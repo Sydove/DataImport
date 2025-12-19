@@ -11,3 +11,9 @@ kafka:
 postgresql:
   writeDSN: "postgres://lql:lql@123@192.168.31.164:30432/lqldb?sslmode=disable"
   readDSN: "postgres://lql:lql@123@192.168.31.164:30433/lqldb?sslmode=disable"
+
+
+elasticsearch:
+  addr: http://192.168.31.164:30920
+  user: elastic
+  passwd: changeme
