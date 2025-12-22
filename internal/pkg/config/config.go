@@ -11,12 +11,12 @@ import (
 
 func init() {
 	mode := os.Getenv("PROJECT_MODE")
-	projectPath := utils.GetProjectPath()
+	projectPath := utils.GetConfigPath()
 	switch mode {
 	case "prod":
-		viper.SetConfigFile(filepath.Join(projectPath, "internal/config/config.yaml"))
+		viper.SetConfigFile(filepath.Join(projectPath, "config.yaml"))
 	default:
-		viper.SetConfigFile(filepath.Join(projectPath, "internal/config/config.yaml"))
+		viper.SetConfigFile(filepath.Join(projectPath, "config.yaml"))
 	}
 	if err := viper.ReadInConfig(); err != nil {
 		panic(err)

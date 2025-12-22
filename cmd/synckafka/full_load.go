@@ -185,8 +185,8 @@ func consumer(client *mKakfa.Client, group *sync.WaitGroup, consumerID int, tota
 }
 
 func createEsIndex(esClient *es.ESClient) error {
-	projectPath := utils.GetProjectPath()
-	mappingPath := filepath.Join(projectPath, "internal/config/article.json")
+	projectPath := utils.GetConfigPath()
+	mappingPath := filepath.Join(projectPath, "article.json")
 	// 读取映射文件
 	mapping, err := utils.ReadJSONFile(mappingPath)
 	if err != nil {

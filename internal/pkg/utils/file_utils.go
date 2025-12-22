@@ -9,23 +9,27 @@ import (
 	"strings"
 )
 
-func GetProjectPath() string {
-	_, filename, _, ok := runtime.Caller(0)
-	if !ok {
-		panic("cannot get project root path")
+func GetConfigPath() string {
+	var configPath string
+	configPath = os.Getenv("CONFIG_PATH")
+	if configPath == "" {
+		_, filename, _, ok := runtime.Caller(0)
+		if !ok {
+			panic("cannot get project root path")
+		}
+		absPath, err := filepath.Abs(filename)
+		if err != nil {
+			panic(err)
+		}
+		path := filepath.Clean(absPath)
+		parts := strings.Split(path, string(filepath.Separator))
+		configPath = string(filepath.Separator) + filepath.Join(parts[1:len(parts)-4]...)
 	}
-	absPath, err := filepath.Abs(filename)
-	if err != nil {
-		panic(err)
-	}
-	path := filepath.Clean(absPath)
-	parts := strings.Split(path, string(filepath.Separator))
-	projectPath := string(filepath.Separator) + filepath.Join(parts[1:len(parts)-4]...)
-	return projectPath
+	return configPath
 }
 
 func WriteToFile(filename string) error {
-	progressFile := filepath.Join(GetProjectPath(), "progress.txt")
+	progressFile := filepath.Join(GetConfigPath(), "progress.txt")
 	file, err := os.OpenFile(progressFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0666)
 	if err != nil {
 		return err
