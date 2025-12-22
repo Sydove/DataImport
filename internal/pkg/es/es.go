@@ -17,7 +17,8 @@ import (
 )
 
 type ESClient struct {
-	client *elasticsearch.Client
+	client     *elasticsearch.Client
+	MaxRetries int
 }
 
 func NewESClient() *ESClient {
@@ -25,16 +26,17 @@ func NewESClient() *ESClient {
 	username := viper.GetString("elasticsearch.user")
 	password := viper.GetString("elasticsearch.passwd")
 	cfg := elasticsearch.Config{
-		Addresses: []string{addr},
-		Username:  username,
-		Password:  password,
+		Addresses:  []string{addr},
+		Username:   username,
+		Password:   password,
+		MaxRetries: 3,
 	}
 
 	client, err := elasticsearch.NewClient(cfg)
 	if err != nil {
 		panic(err)
 	}
-	return &ESClient{client}
+	return &ESClient{client, 3}
 }
 
 // GetClusterInfo

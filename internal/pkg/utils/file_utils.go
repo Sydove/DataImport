@@ -23,7 +23,8 @@ func GetConfigPath() string {
 		}
 		path := filepath.Clean(absPath)
 		parts := strings.Split(path, string(filepath.Separator))
-		configPath = string(filepath.Separator) + filepath.Join(parts[1:len(parts)-4]...)
+		projectPath := string(filepath.Separator) + filepath.Join(parts[1:len(parts)-4]...)
+		configPath = filepath.Join(projectPath, "internal/config")
 	}
 	return configPath
 }

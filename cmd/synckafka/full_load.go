@@ -114,7 +114,6 @@ func producer(client *mKakfa.Client, group *sync.WaitGroup, stopCtx context.Cont
 		panic(err)
 	}
 	mProducer := client.GetProducer()
-	mProducer.Producer.GetMetadata(nil, true, 5000)
 	go pushToChannel(job, mProducer)
 	var topicName = TopicName
 	for i := 0; i < 3; i++ {
@@ -146,7 +145,7 @@ func producer(client *mKakfa.Client, group *sync.WaitGroup, stopCtx context.Cont
 	}
 }
 
-func pushToElasticSearch(msg *kafkaGo.Message, esClient *es.ESClient) error {
+func pushToElasticSearch(msg *kafkaGo.Message, esClient *es.ESClient, kafkaClient *mKakfa.Client) error {
 	// 解析消息
 	var record map[string]interface{}
 	if err := json.Unmarshal(msg.Value, &record); err != nil {
@@ -156,9 +155,25 @@ func pushToElasticSearch(msg *kafkaGo.Message, esClient *es.ESClient) error {
 	//fmt.Println(record)
 	docId := record["id"].(float64)
 	docIdStr := strconv.FormatInt(int64(docId), 10)
-	insertErr := esClient.InsertSingleDocument(context.Background(), IndexName, docIdStr, record)
+	insertErr := utils.Retry(esClient.MaxRetries, 2*time.Second, func() error { return esClient.InsertSingleDocument(context.Background(), IndexName, docIdStr, record) })
 	if insertErr != nil {
-		fmt.Printf("插入失败: %v\n", docId)
+		// 写入死信队列
+		mProducer := kafkaClient.GetProducer()
+		var topicName = DLQTopicName
+		jsonData, err := json.Marshal(record)
+		if err != nil {
+			fmt.Println("序列化失败:", err)
+		}
+		sendMsg := &kafkaGo.Message{
+			TopicPartition: kafkaGo.TopicPartition{
+				Topic: &topicName,
+			},
+			Value: jsonData,
+		}
+		if err := mProducer.Produce(sendMsg); err != nil {
+			fmt.Printf("Produce message failed: %v\n", err)
+		}
+
 	}
 	return nil
 }
@@ -179,7 +194,7 @@ func consumer(client *mKakfa.Client, group *sync.WaitGroup, consumerID int, tota
 	}
 
 	// 开始消费
-	consumer.StartConsuming(consumerID, pushToElasticSearch, total, esClient)
+	consumer.StartConsuming(consumerID, pushToElasticSearch, total, esClient, client)
 	return nil
 
 }
@@ -230,12 +245,23 @@ func main() {
 	//	ReplicationFactor: 3,
 	//}
 
-	// 删除topic
+	//删除topic
 	//if err := kafkaClient.DeleteTopic(TopicName); err != nil {
 	//	panic(err)
 	//}
 	//
 	//if err := kafkaClient.CreateTopic(topicConfig); err != nil {
+	//	panic(err)
+	//}
+	//DlqTopicConfig := mKakfa.TopicConfig{
+	//	Name:              DLQTopicName,
+	//	NumPartitions:     3,
+	//	ReplicationFactor: 3,
+	//}
+	//if err := kafkaClient.DeleteTopic(TopicName); err != nil {
+	//	panic(err)
+	//}
+	//if err := kafkaClient.CreateTopic(DlqTopicConfig); err != nil {
 	//	panic(err)
 	//}
 	//if err := kafkaClient.WaitTopicReady(TopicName, 300*time.Second); err != nil {

@@ -46,7 +46,7 @@ func NewConsumer(config ConsumerConfig, consumerID int, stopCtx context.Context)
 }
 
 // StartConsuming 开始消费消息
-func (c *Consumer) StartConsuming(consumerID int, handler func(msg *kafka.Message, esClient *es.ESClient) error, total *int64, esClient *es.ESClient) error {
+func (c *Consumer) StartConsuming(consumerID int, handler func(msg *kafka.Message, esClient *es.ESClient, kafkaClient *Client) error, total *int64, esClient *es.ESClient, kafkaClient *Client) error {
 	messageCount := 0
 	offsetMap := make(map[kafka.TopicPartition]kafka.Offset)
 	ticker := time.NewTicker(10 * time.Second)
@@ -61,7 +61,7 @@ func (c *Consumer) StartConsuming(consumerID int, handler func(msg *kafka.Messag
 
 				// 处理消息
 				if handler != nil {
-					if err := handler(e, esClient); err != nil {
+					if err := handler(e, esClient, kafkaClient); err != nil {
 						fmt.Printf("处理消息失败: %v\n", err)
 					}
 				}
