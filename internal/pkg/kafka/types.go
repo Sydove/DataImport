@@ -45,7 +45,7 @@ type ProducerConfig struct {
 type ConsumerConfig struct {
 	GroupID         string   // Consumer Group ID
 	Topics          []string // 订阅的 Topic 列表
-	AutoOffsetReset string   // earliest 或 latest
+	AutoOffsetReset string   // earliest(最早的消息开始读)或latest(最新的消息) 指定消费者在启动时或遇到无效偏移量（Offset）时的初始消费位置策略.只有在消费者首次启动或者offset被kafka删除后生效
 	CommitBatchSize int      // 批量提交大小
 }
 
@@ -54,4 +54,5 @@ type TopicConfig struct {
 	Name              string // Topic 名称
 	NumPartitions     int    // 分区数
 	ReplicationFactor int    // 副本因子
+	ConfigMap         map[string]string
 }

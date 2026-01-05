@@ -7,12 +7,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
-	"time"
+	"strings"
 
 	"github.com/elastic/go-elasticsearch/v8"
 	"github.com/elastic/go-elasticsearch/v8/esapi"
-	"github.com/elastic/go-elasticsearch/v8/esutil"
 	"github.com/spf13/viper"
 )
 
@@ -175,71 +173,73 @@ func (es *ESClient) InsertSingleDocument(ctx context.Context, indexName, docID s
 
 // BulkInsertDocuments
 //
-//	@Description: 批量插入文档
+//	@Description: 批量插入elasticsearch
 //	@receiver es
-//	@param ctx
-//	@param indexName
-//	@param documents
-//	@return error
-func (es *ESClient) BulkInsertDocuments(ctx context.Context, indexName string, documents []map[string]interface{}) error {
-	// 创建 BulkIndexer
-	bi, err := esutil.NewBulkIndexer(esutil.BulkIndexerConfig{
-		Index:         indexName,
-		Client:        es.client,
-		NumWorkers:    4,                // 并发 worker 数量
-		FlushBytes:    5e+6,             // 5MB 刷新一次
-		FlushInterval: 30 * time.Second, // 30 秒刷新一次
-	})
-	if err != nil {
-		return fmt.Errorf("创建 BulkIndexer 失败: %w", err)
-	}
-
-	// 添加文档到批量操作
-	for i, doc := range documents {
-		docJSON, err := json.Marshal(doc)
-		if err != nil {
-			log.Printf("序列化文档 %d 失败: %v", i, err)
-			continue
-		}
-
-		// 如果文档中有 id 字段,使用它作为文档 ID
-		docID := ""
-		if id, ok := doc["id"]; ok {
-			docID = fmt.Sprintf("%v", id)
-		}
-
-		err = bi.Add(
-			ctx,
-			esutil.BulkIndexerItem{
-				Action:     "index",
-				DocumentID: docID,
-				Body:       bytes.NewReader(docJSON),
-				OnSuccess: func(ctx context.Context, item esutil.BulkIndexerItem, res esutil.BulkIndexerResponseItem) {
-					// 成功回调(可选)
-				},
-				OnFailure: func(ctx context.Context, item esutil.BulkIndexerItem, res esutil.BulkIndexerResponseItem, err error) {
-					if err != nil {
-						log.Printf("批量插入失败: %v", err)
-					} else {
-						log.Printf("批量插入失败: %s: %s", res.Error.Type, res.Error.Reason)
-					}
-				},
+//	@return unc
+func (es *ESClient) BulkInsertDocuments(ctx context.Context, indexName string, documents []map[string]interface{}) ([]string, error) {
+	var failedIDs []string
+	var bulkBody strings.Builder
+	//startId, endId := documents[0]["id"], documents[len(documents)-1]["id"]
+	startId, _ := documents[0]["id"].(float64)
+	endId, _ := documents[len(documents)-1]["id"].(float64)
+	// 构建批量请求体
+	for _, doc := range documents {
+		// 准备元数据
+		meta := map[string]interface{}{
+			"index": map[string]interface{}{
+				"_index": indexName,
 			},
-		)
-		if err != nil {
-			log.Printf("添加文档到 BulkIndexer 失败: %v", err)
+		}
+
+		// 处理文档ID（如果不提供ID，Elasticsearch会自动生成）
+		if id, ok := doc["id"].(float64); ok && id != 0 {
+			meta["index"].(map[string]interface{})["_id"] = fmt.Sprintf("%d", int(id))
+		}
+
+		metaJSON, _ := json.Marshal(meta)
+		docJSON, _ := json.Marshal(doc)
+
+		bulkBody.Write(metaJSON)
+		bulkBody.WriteByte('\n')
+		bulkBody.Write(docJSON)
+		bulkBody.WriteByte('\n')
+	}
+
+	// 执行批量请求
+	res, err := esapi.BulkRequest{
+		Body: strings.NewReader(bulkBody.String()),
+	}.Do(ctx, es.client)
+	if err != nil {
+		return nil, fmt.Errorf("请求失败: %w", err)
+	}
+	defer res.Body.Close()
+
+	// 解析响应，提取失败ID
+	var resp struct {
+		Errors bool `json:"errors"`
+		Items  []struct {
+			Index struct {
+				ID     string `json:"_id"`
+				Status int    `json:"status"`
+			} `json:"index"`
+		} `json:"items"`
+	}
+
+	if err := json.NewDecoder(res.Body).Decode(&resp); err != nil {
+		return nil, fmt.Errorf("解析响应失败: %w", err)
+	}
+
+	// 收集失败ID
+	if resp.Errors {
+		for _, item := range resp.Items {
+			if item.Index.Status >= 400 {
+				failedIDs = append(failedIDs, item.Index.ID)
+			}
 		}
 	}
 
-	// 关闭 BulkIndexer,等待所有操作完成
-	if err := bi.Close(ctx); err != nil {
-		return fmt.Errorf("关闭 BulkIndexer 失败: %w", err)
-	}
-
-	stats := bi.Stats()
-	log.Printf("批量插入完成: 成功 %d, 失败 %d", stats.NumFlushed, stats.NumFailed)
-
-	return nil
+	fmt.Printf("成功插入elasticsearch,插入范围:%d-%d ,插入失败的有:%v \n", int(startId), int(endId), failedIDs)
+	return failedIDs, nil
 }
 
 // Count

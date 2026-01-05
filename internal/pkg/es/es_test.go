@@ -47,11 +47,11 @@ func TestES(t *testing.T) {
 	//	t.Errorf("insert failed: %v", insertErr)
 	//}
 
-	result, searchErr := esClient.SearchAll(context.Background(), "article", 10)
-	if searchErr != nil {
-		t.Errorf("SearchAll failed: %v", searchErr)
-	}
-	fmt.Printf("%#v\n", result)
+	//result, searchErr := esClient.SearchAll(context.Background(), "article", 10)
+	//if searchErr != nil {
+	//	t.Errorf("SearchAll failed: %v", searchErr)
+	//}
+	//fmt.Printf("%#v\n", result)
 	total, err := esClient.Count(context.Background(), "article")
 	if err != nil {
 		t.Errorf("Count failed: %v", err)

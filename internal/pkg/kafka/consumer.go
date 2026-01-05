@@ -56,8 +56,8 @@ func (c *Consumer) StartConsuming(consumerID int, handler func(msg *kafka.Messag
 		case ev := <-c.consumer.Events():
 			switch e := ev.(type) {
 			case *kafka.Message:
-				fmt.Printf("Consumer_%d got msg: %s, partition=%d offset=%d\n",
-					consumerID, string(e.Value), e.TopicPartition.Partition, e.TopicPartition.Offset)
+				//fmt.Printf("Consumer_%d got msg: %s, partition=%d offset=%d\n",
+				//	consumerID, string(e.Value), e.TopicPartition.Partition, e.TopicPartition.Offset)
 
 				// 处理消息
 				if handler != nil {

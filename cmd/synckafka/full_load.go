@@ -19,7 +19,6 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"strconv"
 	"sync"
 	"syscall"
 	"time"
@@ -58,6 +57,7 @@ func readFromPostgres(ctx context.Context, pageSize, startId int) []DataReocrd {
 	defer rows.Close()
 	results, err := pgx.CollectRows(rows, pgx.RowToStructByName[DataReocrd])
 	if err != nil {
+		fmt.Println("Error reading from postgres:", err)
 		panic(err)
 	}
 	// 限制时间精度到毫秒,es最多支持到毫秒级别(3位小数)
@@ -77,7 +77,7 @@ func pushToChannel(job chan []DataReocrd, producer *mKakfa.Producer) {
 
 	for {
 		// 读取 postgres 超时时间
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 160*time.Second)
 
 		records := readFromPostgres(ctx, 100, startId)
 		cancel()
@@ -105,10 +105,11 @@ func producer(client *mKakfa.Client, group *sync.WaitGroup, stopCtx context.Cont
 	job := make(chan []DataReocrd, 3)
 	err := client.NewClientWithConfig(mKakfa.ProducerConfig{
 		CompressionType: "snappy",
-		BatchSize:       51200,
+		BatchSize:       65536,
 		LingerMs:        10,
 		Acks:            "all",
-		MaxPending:      10000, // 背压阈值
+		//Acks:       "1",
+		MaxPending: 10000, // 背压阈值
 	}, stopCtx)
 	if err != nil {
 		panic(err)
@@ -116,30 +117,28 @@ func producer(client *mKakfa.Client, group *sync.WaitGroup, stopCtx context.Cont
 	mProducer := client.GetProducer()
 	go pushToChannel(job, mProducer)
 	var topicName = TopicName
-	for i := 0; i < 3; i++ {
+	for i := 0; i < 6; i++ {
 		group.Add(1)
 		go func(partitionId int) {
 			defer group.Done()
+			defer mProducer.Producer.Flush(3000) // Flush() 实际上是等待消息的 ack 返回，而不仅仅是发出网络请求
 			for record := range job {
 				//  批量kafka
-				for _, item := range record {
-					jsonData, err := json.Marshal(item)
-					if err != nil {
-						fmt.Println("序列化失败:", err)
-						return
-					}
-					sendMsg := &kafkaGo.Message{
-						TopicPartition: kafkaGo.TopicPartition{
-							Topic:     &topicName,
-							Partition: int32(partitionId),
-						},
-						Value: jsonData,
-					}
-					if err := mProducer.Produce(sendMsg); err != nil {
-						fmt.Printf("Produce message failed: %v\n", err)
-					}
+				jsonData, err := json.Marshal(record)
+				if err != nil {
+					fmt.Println("序列化channel数据异常", err)
+					continue
 				}
-
+				sendMsg := &kafkaGo.Message{
+					TopicPartition: kafkaGo.TopicPartition{
+						Topic: &topicName,
+						//Partition: int32(partitionId),
+					},
+					Value: jsonData,
+				}
+				if err := mProducer.Produce(sendMsg); err != nil {
+					fmt.Printf("Produce message failed: %v\n", err) // TODO Local: Queue full
+				}
 			}
 		}(i)
 	}
@@ -147,20 +146,17 @@ func producer(client *mKakfa.Client, group *sync.WaitGroup, stopCtx context.Cont
 
 func pushToElasticSearch(msg *kafkaGo.Message, esClient *es.ESClient, kafkaClient *mKakfa.Client) error {
 	// 解析消息
-	var record map[string]interface{}
+	var record []map[string]interface{}
 	if err := json.Unmarshal(msg.Value, &record); err != nil {
 		fmt.Println("反序列化失败:", err)
 		return err
 	}
-	//fmt.Println(record)
-	docId := record["id"].(float64)
-	docIdStr := strconv.FormatInt(int64(docId), 10)
-	insertErr := utils.Retry(esClient.MaxRetries, 2*time.Second, func() error { return esClient.InsertSingleDocument(context.Background(), IndexName, docIdStr, record) })
+	errIds, insertErr := utils.Retry(esClient.MaxRetries, 2*time.Second, func() ([]string, error) { return esClient.BulkInsertDocuments(context.Background(), IndexName, record) })
 	if insertErr != nil {
 		// 写入死信队列
 		mProducer := kafkaClient.GetProducer()
 		var topicName = DLQTopicName
-		jsonData, err := json.Marshal(record)
+		jsonData, err := json.Marshal(errIds)
 		if err != nil {
 			fmt.Println("序列化失败:", err)
 		}
@@ -207,9 +203,92 @@ func createEsIndex(esClient *es.ESClient) error {
 	if err != nil {
 		return err
 	}
-	fmt.Printf("%#v\n", mapping)
 	if err := esClient.CreateIndexWithMapping(context.Background(), "article", mapping); err != nil {
 		return err
+	}
+	return nil
+}
+
+func initTopics(kafkaClient *mKakfa.Client) error {
+	topicConfig := mKakfa.TopicConfig{
+		Name:              TopicName,
+		NumPartitions:     6,
+		ReplicationFactor: 1,
+		ConfigMap: map[string]string{
+			// 1. 每个分区最大保留 1GB 数据
+			"retention.bytes": "1073741824", // 1GB = 1024*1024*1024
+
+			// 2. 每个 segment 文件的最大大小 (100MB)
+			"segment.bytes": "104857600", // 100MB
+
+			// 3. 删除策略: delete (删除旧数据) 或 compact (压缩)
+			"cleanup.policy": "delete",
+
+			// ============ 基于时间的保留策略 ============
+
+			// 4. 消息保留时间 (7天)
+			"retention.ms": "604800000", // 7天 = 7*24*60*60*1000
+
+			// 5. segment 文件关闭前的最长时间 (1天)
+			"segment.ms": "86400000", // 1天
+
+			// ============ 其他重要配置 ============
+
+			// 6. 最小同步副本数
+			"min.insync.replicas": "1",
+
+			// 7. 压缩类型
+			"compression.type": "snappy",
+		},
+	}
+	DlqTopicConfig := mKakfa.TopicConfig{
+		Name:              DLQTopicName,
+		NumPartitions:     3,
+		ReplicationFactor: 1,
+		ConfigMap: map[string]string{
+			// 1. 每个分区最大保留 1GB 数据
+			"retention.bytes": "1073741824", // 1GB = 1024*1024*1024
+
+			// 2. 每个 segment 文件的最大大小 (100MB)
+			"segment.bytes": "104857600", // 100MB
+
+			// 3. 删除策略: delete (删除旧数据) 或 compact (压缩)
+			"cleanup.policy": "delete",
+
+			// ============ 基于时间的保留策略 ============
+
+			// 4. 消息保留时间 (7天)
+			"retention.ms": "604800000", // 7天 = 7*24*60*60*1000
+
+			// 5. segment 文件关闭前的最长时间 (1天)
+			"segment.ms": "86400000", // 1天
+
+			// ============ 其他重要配置 ============
+
+			// 6. 最小同步副本数
+			"min.insync.replicas": "1",
+
+			// 7. 压缩类型
+			"compression.type": "snappy",
+		},
+	}
+
+	//删除topic
+	if err := kafkaClient.DeleteTopic(TopicName); err != nil {
+		panic(err)
+	}
+	if err := kafkaClient.DeleteTopic(DLQTopicName); err != nil {
+		panic(err)
+	}
+
+	if err := kafkaClient.CreateTopic(topicConfig); err != nil {
+		panic(err)
+	}
+	if err := kafkaClient.CreateTopic(DlqTopicConfig); err != nil {
+		panic(err)
+	}
+	if err := kafkaClient.WaitTopicReady(TopicName, 300*time.Second); err != nil {
+		panic(err)
 	}
 	return nil
 }
@@ -222,56 +301,31 @@ func main() {
 	if err := postgresql.InitDB(); err != nil {
 		panic(err)
 	}
-	// 创建kafka topic
-	kafkaClient, err := mKakfa.NewClient()
-	if err != nil {
-		panic(err)
-	}
 
 	// 创建ES
 	esClient := es.NewESClient()
 
 	// 初始化索引
 	if err := esClient.DeleteIndex(context.Background(), IndexName); err != nil {
-		panic(err)
+		fmt.Println("删除索引失败!")
 	}
 	if err := createEsIndex(esClient); err != nil {
 		panic(err)
 	}
+	// 创建kafka
+	kafkaClient, err := mKakfa.NewClient()
+	if err != nil {
+		panic(err)
+	}
 
-	//topicConfig := mKakfa.TopicConfig{
-	//	Name:              TopicName,
-	//	NumPartitions:     3,
-	//	ReplicationFactor: 3,
-	//}
-
-	//删除topic
-	//if err := kafkaClient.DeleteTopic(TopicName); err != nil {
-	//	panic(err)
-	//}
-	//
-	//if err := kafkaClient.CreateTopic(topicConfig); err != nil {
-	//	panic(err)
-	//}
-	//DlqTopicConfig := mKakfa.TopicConfig{
-	//	Name:              DLQTopicName,
-	//	NumPartitions:     3,
-	//	ReplicationFactor: 3,
-	//}
-	//if err := kafkaClient.DeleteTopic(TopicName); err != nil {
-	//	panic(err)
-	//}
-	//if err := kafkaClient.CreateTopic(DlqTopicConfig); err != nil {
-	//	panic(err)
-	//}
-	//if err := kafkaClient.WaitTopicReady(TopicName, 300*time.Second); err != nil {
+	//if err := initTopics(kafkaClient); err != nil {
 	//	panic(err)
 	//}
 
 	go producer(kafkaClient, &waitGroup, cancelCtx)
 
 	var total int64 = 0
-	for i := 0; i < 3; i++ {
+	for i := 0; i < 6; i++ {
 		waitGroup.Add(1)
 		go func(consumerID int) {
 			if err := consumer(kafkaClient, &waitGroup, consumerID, &total, esClient, cancelCtx); err != nil {

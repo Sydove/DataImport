@@ -19,6 +19,7 @@ func (c *Client) CreateTopic(config TopicConfig) error {
 			Topic:             config.Name,
 			NumPartitions:     config.NumPartitions,
 			ReplicationFactor: config.ReplicationFactor,
+			Config:            config.ConfigMap,
 		}},
 	)
 

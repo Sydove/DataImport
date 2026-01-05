@@ -1,0 +1,49 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: data-import
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: data-import
+  namespace: data-import
+  labels:
+    app: data-import
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: data-import
+  template:
+    metadata:
+      labels:
+        app: data-import
+    spec:
+      containers:
+        - name: data-import
+          image: sydove/data_import:v1.4
+          env:
+            - name: CONFIG_PATH
+              value: "/app/config"
+          command:
+            - sh
+            - -c
+            - "/app/main >> /var/log/data_import.log 2>&1"
+          livenessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - "[ -f /var/log/data_import.log ] && [ $(date +%s) -le $(expr $(date +%s -r /var/log/data_import.log) + 120) ] || exit 1"
+            initialDelaySeconds: 60
+            periodSeconds: 15
+            failureThreshold: 2
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "1Gi"
+            limits:
+              cpu: "2"
+              memory: "2Gi"

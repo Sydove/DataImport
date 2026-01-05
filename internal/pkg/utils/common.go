@@ -5,14 +5,15 @@ import (
 	"time"
 )
 
-func Retry(attempts int, sleep time.Duration, fn func() error) error {
+func Retry(attempts int, sleep time.Duration, fn func() ([]string, error)) ([]string, error) {
 	var err error
+	var errIds []string
 	for i := 0; i < attempts; i++ {
-		err = fn()
+		errIds, err = fn()
 		if err == nil {
-			return nil
+			return errIds, nil
 		}
 		time.Sleep(sleep)
 	}
-	return fmt.Errorf("重试 %d 次后仍然失败: %w", attempts, err)
+	return errIds, fmt.Errorf("重试 %d 次后仍然失败: %w", attempts, err)
 }

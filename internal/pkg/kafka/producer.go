@@ -27,7 +27,15 @@ func NewProducer(config ProducerConfig, stopCtx context.Context) (*Producer, err
 	kafkaConfig.SetKey("acks", config.Acks)
 	kafkaConfig.SetKey("queue.buffering.max.messages", 2000000)
 	kafkaConfig.SetKey("queue.buffering.max.kbytes", 1048576)
-	kafkaConfig.SetKey("enable.idempotence", true)
+	kafkaConfig.SetKey("enable.idempotence", true) // 如果设置为True,则acks必须为all
+	kafkaConfig.SetKey("request.timeout.ms", 60000)
+	kafkaConfig.SetKey("message.timeout.ms", 120000)
+	kafkaConfig.SetKey("socket.timeout.ms", 60000)
+	kafkaConfig.SetKey("queue.buffering.backpressure.threshold", 1) // 队列缓冲背压阈值
+	// 重试
+	kafkaConfig.SetKey("retries", 5)            // 最大重试次数
+	kafkaConfig.SetKey("retry.backoff.ms", 100) // 重试间隔（默认 100ms）
+	kafkaConfig.SetKey("retry.backoff.ms", 3)   // 每条消息的最大重试次数
 
 	producer, err := kafka.NewProducer(kafkaConfig)
 	if err != nil {
@@ -44,7 +52,6 @@ func NewProducer(config ProducerConfig, stopCtx context.Context) (*Producer, err
 
 	// 启动 ACK 处理
 	go p.handleDeliveryReports()
-
 	return p, nil
 }
 
