@@ -318,9 +318,9 @@ func main() {
 		panic(err)
 	}
 
-	//if err := initTopics(kafkaClient); err != nil {
-	//	panic(err)
-	//}
+	if err := initTopics(kafkaClient); err != nil {
+		panic(err)
+	}
 
 	go producer(kafkaClient, &waitGroup, cancelCtx)
 
