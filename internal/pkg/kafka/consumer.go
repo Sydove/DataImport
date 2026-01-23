@@ -46,7 +46,7 @@ func NewConsumer(config ConsumerConfig, consumerID int, stopCtx context.Context)
 }
 
 // StartConsuming 开始消费消息
-func (c *Consumer) StartConsuming(consumerID int, handler func(msg *kafka.Message, esClient *es.ESClient, kafkaClient *Client) error, total *int64, esClient *es.ESClient, kafkaClient *Client) error {
+func (c *Consumer) StartConsuming(consumerID int, handler func(consumerID int, msg *kafka.Message, esClient *es.ESClient, kafkaClient *Client) error, total *int64, esClient *es.ESClient, kafkaClient *Client) error {
 	messageCount := 0
 	offsetMap := make(map[kafka.TopicPartition]kafka.Offset)
 	ticker := time.NewTicker(10 * time.Second)
@@ -56,12 +56,25 @@ func (c *Consumer) StartConsuming(consumerID int, handler func(msg *kafka.Messag
 		case ev := <-c.consumer.Events():
 			switch e := ev.(type) {
 			case *kafka.Message:
-				//fmt.Printf("Consumer_%d got msg: %s, partition=%d offset=%d\n",
-				//	consumerID, string(e.Value), e.TopicPartition.Partition, e.TopicPartition.Offset)
-
+				if string(e.Value) == "__EOF__" {
+					fmt.Println("程序停止,检查是否还有offset需要提交")
+					var offsets []kafka.TopicPartition
+					for tp, off := range offsetMap {
+						tp.Offset = off
+						offsets = append(offsets, tp)
+					}
+					if len(offsets) > 0 {
+						if _, err := c.consumer.CommitOffsets(offsets); err != nil {
+							fmt.Println("提交失败")
+						} else {
+							fmt.Println("结束程序批量提交成功", offsets)
+						}
+					}
+					return nil
+				}
 				// 处理消息
 				if handler != nil {
-					if err := handler(e, esClient, kafkaClient); err != nil {
+					if err := handler(consumerID, e, esClient, kafkaClient); err != nil {
 						fmt.Printf("处理消息失败: %v\n", err)
 					}
 				}
@@ -122,21 +135,8 @@ func (c *Consumer) StartConsuming(consumerID int, handler func(msg *kafka.Messag
 					offsetMap = make(map[kafka.TopicPartition]kafka.Offset)
 				}
 			}
-		case <-c.StopCtx.Done():
-			fmt.Println("程序停止,检查是否还有offset需要提交")
-			var offsets []kafka.TopicPartition
-			for tp, off := range offsetMap {
-				tp.Offset = off
-				offsets = append(offsets, tp)
-			}
-			if len(offsets) > 0 {
-				if _, err := c.consumer.CommitOffsets(offsets); err != nil {
-					fmt.Println("提交失败")
-				} else {
-					fmt.Println("结束程序批量提交成功", offsets)
-				}
-			}
-			return nil
+			//case <-c.StopCtx.Done():
+
 		}
 	}
 

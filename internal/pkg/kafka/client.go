@@ -80,7 +80,6 @@ func (c *Client) Close() error {
 	// 关闭所有 Consumer
 	for _, consumer := range c.consumers {
 		if consumer != nil {
-			fmt.Printf("%+v\n", consumer)
 			consumer.Close()
 		}
 	}
