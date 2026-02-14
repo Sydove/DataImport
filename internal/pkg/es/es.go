@@ -236,7 +236,11 @@ func (resp *BulkResponse) GenerateStats() (BulkStats, []string) {
 //	@receiver es
 //	@return unc
 func (es *ESClient) BulkInsertDocuments(consumerID int, ctx context.Context, indexName string, documents []map[string]interface{}) ([]string, error) {
+	// 预分配足够的空间给strings.Builder
+	estSize := len(documents) * 1000 // 根据实际情况调整预估大小
 	var bulkBody strings.Builder
+	bulkBody.Grow(estSize)
+	
 	startId, _ := documents[0]["id"].(float64)
 	endId, _ := documents[len(documents)-1]["id"].(float64)
 	// 构建批量请求体

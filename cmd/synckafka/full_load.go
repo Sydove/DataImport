@@ -50,7 +50,6 @@ type DataReocrd struct {
 //	@param startId 开始id
 //	@return []postgresql.Record
 func readFromPostgres(ctx context.Context, pageSize, startId int) []DataReocrd {
-	// TODO 重复查询出来了一条
 	rows, err := postgresql.Pool.Query(ctx, "SELECT content, origin_id, id, title, created_at, account_id FROM article WHERE id > $1 order by id LIMIT $2", startId, pageSize)
 	if err != nil {
 		panic(err)
@@ -133,8 +132,8 @@ func producer(client *mKakfa.Client, group *sync.WaitGroup, stopCtx context.Cont
 				}
 				sendMsg := &kafkaGo.Message{
 					TopicPartition: kafkaGo.TopicPartition{
-						Topic:     &topicName,
-						Partition: int32(i), // 直接指定partition
+						Topic: &topicName,
+						//Partition: int32(i), // 直接指定partition
 					},
 					Value: jsonData,
 				}
@@ -366,10 +365,3 @@ func main() {
 	fmt.Printf("一共消费%d\n", total)
 	fmt.Println("所有 goroutine 已运行结束，程序结束")
 }
-
-/*
-1.收到退出信号
-2.关闭数据库读取生产者
-3.生产者将所有数据写入kafka,然后结束
-4.消费者消费完成所有kafka里的数据,并且全部写入es,结束
-*/

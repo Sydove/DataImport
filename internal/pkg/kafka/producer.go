@@ -25,8 +25,10 @@ func NewProducer(config ProducerConfig, stopCtx context.Context) (*Producer, err
 	kafkaConfig.SetKey("batch.size", config.BatchSize)
 	kafkaConfig.SetKey("linger.ms", config.LingerMs)
 	kafkaConfig.SetKey("acks", config.Acks)
-	kafkaConfig.SetKey("queue.buffering.max.messages", 2000000)
-	kafkaConfig.SetKey("queue.buffering.max.kbytes", 1048576)
+	// 在NewProducer函数中修改以下配置
+	kafkaConfig.SetKey("queue.buffering.max.messages", 100000) // 从2,000,000减少到100,000
+	kafkaConfig.SetKey("queue.buffering.max.kbytes", 131072)   // 从1GB减少到128MB
+	kafkaConfig.SetKey("queue.buffering.backpressure.threshold", 10000) // 调整背压阈值
 	kafkaConfig.SetKey("enable.idempotence", true) // 如果设置为True,则acks必须为all
 	kafkaConfig.SetKey("request.timeout.ms", 60000)
 	kafkaConfig.SetKey("message.timeout.ms", 120000)
