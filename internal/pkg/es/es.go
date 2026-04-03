@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
+	"strconv"
 	"strings"
 
 	"github.com/elastic/go-elasticsearch/v8"
@@ -49,7 +51,7 @@ func (es *ESClient) GetClusterInfo(ctx context.Context) (map[string]interface{},
 	if err != nil {
 		return nil, err
 	}
-	defer res.Body.Close()
+	defer func() { _ = res.Body.Close() }()
 	if res.IsError() {
 		return nil, errors.New(res.String())
 	}
@@ -211,6 +213,9 @@ func (resp *BulkResponse) GenerateStats() (BulkStats, []string) {
 	failedItems := make([]string, 0)
 	stats.Total = len(resp.Items)
 	for _, item := range resp.Items {
+		if item.Index.Error.Type == "version_conflict_engine_exception" {
+			stats.Conflicts++
+		}
 		switch {
 		case item.Index.Status >= 400:
 			failedItems = append(failedItems, item.Index.ID)
@@ -223,8 +228,6 @@ func (resp *BulkResponse) GenerateStats() (BulkStats, []string) {
 			stats.Noops++
 		case item.Index.Result == "deleted":
 			stats.Deleted++
-		case item.Index.Error.Type == "version_conflict_engine_exception":
-			stats.Conflicts++
 		}
 	}
 	return stats, failedItems
@@ -236,13 +239,65 @@ func (resp *BulkResponse) GenerateStats() (BulkStats, []string) {
 //	@receiver es
 //	@return unc
 func (es *ESClient) BulkInsertDocuments(consumerID int, ctx context.Context, indexName string, documents []map[string]interface{}) ([]string, error) {
+	if len(documents) == 0 {
+		return nil, nil
+	}
+
 	// 预分配足够的空间给strings.Builder
 	estSize := len(documents) * 1000 // 根据实际情况调整预估大小
+	bulkBody, startID, endID, err := buildBulkRequestBody(indexName, documents, estSize)
+	if err != nil {
+		return nil, err
+	}
+
+	// 执行批量请求
+	res, err := esapi.BulkRequest{
+		Body: strings.NewReader(bulkBody),
+	}.Do(ctx, es.client)
+	if err != nil {
+		return nil, fmt.Errorf("请求失败: %w", err)
+	}
+	defer res.Body.Close()
+
+	if res.IsError() {
+		body, _ := io.ReadAll(res.Body)
+		return nil, fmt.Errorf("bulk 请求失败: %s, 响应: %s", res.Status(), string(body))
+	}
+
+	// 解析响应，提取失败ID
+	var resp BulkResponse
+	if err := json.NewDecoder(res.Body).Decode(&resp); err != nil {
+		return nil, fmt.Errorf("解析响应失败: %w", err)
+	}
+
+	// 收集失败ID
+	stats, failedIDs := resp.GenerateStats()
+	fmt.Printf("consumerID-%d完成任务:\n插入范围%s-%s", consumerID, startID, endID)
+	fmt.Printf("执行任务%d条\n创建记录%d条\n更新%d条\n失败%d条\n", stats.Total, stats.Created, stats.Updated, len(failedIDs))
+	fmt.Println("****************")
+
+	if resp.Errors || len(failedIDs) > 0 {
+		return failedIDs, fmt.Errorf("bulk 写入存在失败文档: total=%d failed=%d conflicts=%d", stats.Total, stats.Failed, stats.Conflicts)
+	}
+	return failedIDs, nil
+}
+
+func buildBulkRequestBody(indexName string, documents []map[string]interface{}, estSize int) (string, string, string, error) {
 	var bulkBody strings.Builder
-	bulkBody.Grow(estSize)
-	
-	startId, _ := documents[0]["id"].(float64)
-	endId, _ := documents[len(documents)-1]["id"].(float64)
+	if estSize > 0 {
+		bulkBody.Grow(estSize)
+	}
+
+	startID := "unknown"
+	if id, ok := documentIDString(documents[0]["id"]); ok {
+		startID = id
+	}
+
+	endID := "unknown"
+	if id, ok := documentIDString(documents[len(documents)-1]["id"]); ok {
+		endID = id
+	}
+
 	// 构建批量请求体
 	for _, doc := range documents {
 		// 准备元数据
@@ -253,12 +308,18 @@ func (es *ESClient) BulkInsertDocuments(consumerID int, ctx context.Context, ind
 		}
 
 		// 处理文档ID（如果不提供ID，Elasticsearch会自动生成）
-		if id, ok := doc["id"].(float64); ok && id != 0 {
-			meta["index"].(map[string]interface{})["_id"] = fmt.Sprintf("%d", int(id))
+		if id, ok := documentIDString(doc["id"]); ok {
+			meta["index"].(map[string]interface{})["_id"] = id
 		}
 
-		metaJSON, _ := json.Marshal(meta)
-		docJSON, _ := json.Marshal(doc)
+		metaJSON, err := json.Marshal(meta)
+		if err != nil {
+			return "", "", "", fmt.Errorf("序列化 bulk 元数据失败: %w", err)
+		}
+		docJSON, err := json.Marshal(doc)
+		if err != nil {
+			return "", "", "", fmt.Errorf("序列化 bulk 文档失败: %w", err)
+		}
 
 		bulkBody.Write(metaJSON)
 		bulkBody.WriteByte('\n')
@@ -266,28 +327,46 @@ func (es *ESClient) BulkInsertDocuments(consumerID int, ctx context.Context, ind
 		bulkBody.WriteByte('\n')
 	}
 
-	// 执行批量请求
-	res, err := esapi.BulkRequest{
-		Body:    strings.NewReader(bulkBody.String()),
-		Refresh: "wait_for",
-	}.Do(ctx, es.client)
-	if err != nil {
-		return nil, fmt.Errorf("请求失败: %w", err)
-	}
-	defer res.Body.Close()
+	return bulkBody.String(), startID, endID, nil
+}
 
-	// 解析响应，提取失败ID
-	var resp BulkResponse
-	if err := json.NewDecoder(res.Body).Decode(&resp); err != nil {
-		return nil, fmt.Errorf("解析响应失败: %w", err)
+func documentIDString(id interface{}) (string, bool) {
+	switch value := id.(type) {
+	case nil:
+		return "", false
+	case string:
+		return value, value != ""
+	case json.Number:
+		return value.String(), value.String() != ""
+	case int:
+		return strconv.Itoa(value), value != 0
+	case int32:
+		return strconv.FormatInt(int64(value), 10), value != 0
+	case int64:
+		return strconv.FormatInt(value, 10), value != 0
+	case uint:
+		return strconv.FormatUint(uint64(value), 10), value != 0
+	case uint32:
+		return strconv.FormatUint(uint64(value), 10), value != 0
+	case uint64:
+		return strconv.FormatUint(value, 10), value != 0
+	case float32:
+		return formatFloatID(float64(value))
+	case float64:
+		return formatFloatID(value)
+	default:
+		return "", false
 	}
+}
 
-	// 收集失败ID
-	stats, failedIDs := resp.GenerateStats()
-	fmt.Printf("consumerID-%d完成任务:\n插入范围%d-%d", consumerID, int(startId), int(endId))
-	fmt.Printf("执行任务%d条\n创建记录%d条\n更新%d条\n失败%d条\n", stats.Total, stats.Created, stats.Updated, len(failedIDs))
-	fmt.Println("****************")
-	return failedIDs, nil
+func formatFloatID(value float64) (string, bool) {
+	if value == 0 {
+		return "", false
+	}
+	if math.Trunc(value) == value {
+		return strconv.FormatInt(int64(value), 10), true
+	}
+	return strconv.FormatFloat(value, 'f', -1, 64), true
 }
 
 // Count

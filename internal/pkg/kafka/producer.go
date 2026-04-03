@@ -1,204 +1,281 @@
-package kafka
+package newkafka
 
 import (
 	"context"
 	"fmt"
+	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/confluentinc/confluent-kafka-go/kafka"
 )
 
-// Producer Kafka Producer 包装
 type Producer struct {
-	Producer *kafka.Producer
-	Tracker  *ProducerTracker
-	StopCtx  context.Context
+	raw       *kafka.Producer
+	opts      ProducerOptions
+	closeOnce sync.Once
+
+	sentCount        int64
+	successCount     int64
+	failedCount      int64
+	fatalErrorCount  int64
+	backpressureHits int64
+	lastFatalErr     atomic.Value
 }
 
-// NewProducer 创建 Producer
-func NewProducer(config ProducerConfig, stopCtx context.Context) (*Producer, error) {
-	kafkaConfig := getBaseConfig()
+// newProducer
+//
+//	@Description: 创建底层 Kafka Producer 封装
+//	@param baseConfig
+//	@param opts
+//	@return *Producer
+//	@return error
+func newProducer(baseConfig *kafka.ConfigMap, opts ProducerOptions) (*Producer, error) {
+	opts = opts.withDefaults()
 
-	// 设置 Producer 配置
-	kafkaConfig.SetKey("compression.type", config.CompressionType)
-	kafkaConfig.SetKey("batch.size", config.BatchSize)
-	kafkaConfig.SetKey("linger.ms", config.LingerMs)
-	kafkaConfig.SetKey("acks", config.Acks)
-	// 在NewProducer函数中修改以下配置
-	kafkaConfig.SetKey("queue.buffering.max.messages", 100000) // 从2,000,000减少到100,000
-	kafkaConfig.SetKey("queue.buffering.max.kbytes", 131072)   // 从1GB减少到128MB
-	kafkaConfig.SetKey("queue.buffering.backpressure.threshold", 10000) // 调整背压阈值
-	kafkaConfig.SetKey("enable.idempotence", true) // 如果设置为True,则acks必须为all
-	kafkaConfig.SetKey("request.timeout.ms", 60000)
-	kafkaConfig.SetKey("message.timeout.ms", 120000)
-	kafkaConfig.SetKey("socket.timeout.ms", 60000)
-	kafkaConfig.SetKey("queue.buffering.backpressure.threshold", 1) // 队列缓冲背压阈值
-	// 重试
-	kafkaConfig.SetKey("retries", 5)            // 最大重试次数
-	kafkaConfig.SetKey("retry.backoff.ms", 100) // 重试间隔（默认 100ms）
-	kafkaConfig.SetKey("retry.backoff.ms", 3)   // 每条消息的最大重试次数
+	baseConfig.SetKey("compression.type", opts.CompressionType)
+	baseConfig.SetKey("batch.size", opts.BatchSize)
+	baseConfig.SetKey("linger.ms", opts.LingerMs)
+	baseConfig.SetKey("acks", opts.Acks)
+	baseConfig.SetKey("queue.buffering.max.messages", opts.QueueMaxMessages)
+	baseConfig.SetKey("queue.buffering.max.kbytes", opts.QueueMaxKBytes)
+	baseConfig.SetKey("queue.buffering.backpressure.threshold", opts.BackpressureThreshold)
+	baseConfig.SetKey("enable.idempotence", opts.EnableIdempotence)
+	baseConfig.SetKey("request.timeout.ms", opts.RequestTimeoutMs)
+	baseConfig.SetKey("message.timeout.ms", opts.MessageTimeoutMs)
+	baseConfig.SetKey("socket.timeout.ms", opts.SocketTimeoutMs)
+	baseConfig.SetKey("retries", opts.Retries)
+	baseConfig.SetKey("retry.backoff.ms", opts.RetryBackoffMs)
 
-	producer, err := kafka.NewProducer(kafkaConfig)
+	rawProducer, err := kafka.NewProducer(baseConfig)
 	if err != nil {
-		return nil, fmt.Errorf("创建 Producer 失败: %w", err)
+		return nil, fmt.Errorf("create kafka producer: %w", err)
 	}
 
-	p := &Producer{
-		Producer: producer,
-		Tracker: &ProducerTracker{
-			maxPending: config.MaxPending,
-		},
-		StopCtx: stopCtx,
+	producer := &Producer{
+		raw:  rawProducer,
+		opts: opts,
 	}
 
-	// 启动 ACK 处理
-	go p.handleDeliveryReports()
-	return p, nil
+	go producer.handleDeliveryReports()
+	return producer, nil
 }
 
-// handleDeliveryReports 处理消息发送的 ACK
-func (p *Producer) handleDeliveryReports() {
-	for e := range p.Producer.Events() {
-		switch ev := e.(type) {
-		case *kafka.Message:
-			if ev.TopicPartition.Error != nil {
-				// 发送失败
-				atomic.AddInt64(&p.Tracker.failedCount, 1)
-				fmt.Printf("消息发送失败: %v\n", ev.TopicPartition.Error)
-			} else {
-				// 发送成功
-				atomic.AddInt64(&p.Tracker.successCount, 1)
-			}
-		case kafka.Error:
-			fmt.Printf("Kafka Error: %v\n", ev)
-		}
-	}
-	fmt.Println("Delivery report handler 退出")
-}
-
-// ProduceWithBackpressure 带背压控制的消息发送
-func (p *Producer) ProduceWithBackpressure(ctx context.Context, msg *kafka.Message) error {
-	// 检查待确认消息数量
-	for {
-		// 原子读取,避免竞态条件
-		sent := atomic.LoadInt64(&p.Tracker.sentCount)
-		success := atomic.LoadInt64(&p.Tracker.successCount)
-		failed := atomic.LoadInt64(&p.Tracker.failedCount)
-		pending := sent - (success + failed)
-		queueLen := int64(p.Producer.Len())
-
-		// 背压控制：如果待确认消息数超过阈值，等待
-		if pending >= p.Tracker.maxPending || queueLen >= p.Tracker.maxPending {
-			atomic.AddInt64(&p.Tracker.backpressureHit, 1)
-
-			// 只在第一次触发背压时打印
-			hitCount := atomic.LoadInt64(&p.Tracker.backpressureHit)
-			if hitCount == 1 || hitCount%100 == 0 {
-				fmt.Printf("背压触发 (第 %d 次): 待确认 %d 条，队列 %d 条，等待处理...\n",
-					hitCount, pending, queueLen)
-			}
-
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case <-time.After(10 * time.Millisecond):
-				// 等待一段时间后重试
-				continue
-			}
-		}
-
-		// 待确认数量在阈值内，可以发送
-		break
-	}
-
-	// 发送消息
-	err := p.Producer.Produce(msg, nil)
-	if err != nil {
-		return fmt.Errorf("提交消息失败: %w", err)
-	}
-
-	// 发送成功，计数 +1
-	atomic.AddInt64(&p.Tracker.sentCount, 1)
-	return nil
-}
-
-// Produce 普通发送（无背压控制）
-func (p *Producer) Produce(msg *kafka.Message) error {
-	err := p.Producer.Produce(msg, nil)
-	if err != nil {
+// Publish
+//
+//	@Description: 发送单条消息，并在发送前执行本地背压控制
+//	@receiver p
+//	@param ctx
+//	@param msg
+//	@return error
+func (p *Producer) Publish(ctx context.Context, msg Message) error {
+	if err := msg.validate(); err != nil {
 		return err
 	}
-	atomic.AddInt64(&p.Tracker.sentCount, 1)
+
+	for {
+		stats := p.Stats()
+		if stats.PendingCount < p.opts.MaxPending && stats.QueueLen < p.opts.MaxPending {
+			break
+		}
+
+		atomic.AddInt64(&p.backpressureHits, 1)
+		// 当本地待确认消息或发送队列过大时，短暂等待下游追平。
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(p.opts.BackpressureWait):
+		}
+	}
+
+	kafkaMsg := &kafka.Message{
+		TopicPartition: kafka.TopicPartition{
+			Topic: &msg.Topic,
+		},
+		Key:     msg.Key,
+		Value:   msg.Value,
+		Headers: toKafkaHeaders(msg.Headers),
+	}
+	if msg.Partition != nil {
+		kafkaMsg.TopicPartition.Partition = *msg.Partition
+	}
+
+	if err := p.raw.Produce(kafkaMsg, nil); err != nil {
+		return fmt.Errorf("publish kafka message: %w", err)
+	}
+
+	p.markSent()
 	return nil
 }
 
-// WaitForCompletion 等待所有消息发送完成
-func (p *Producer) WaitForCompletion(ctx context.Context) error {
-	ticker := time.NewTicker(1 * time.Second)
+// PublishBatch
+//
+//	@Description: 顺序发送一组消息，任一消息失败则立即返回
+//	@receiver p
+//	@param ctx
+//	@param msgs
+//	@return error
+func (p *Producer) PublishBatch(ctx context.Context, msgs []Message) error {
+	for _, msg := range msgs {
+		if err := p.Publish(ctx, msg); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// Flush
+//
+//	@Description: 等待 Producer 将本地缓冲区中的消息尽量发送完成
+//	@receiver p
+//	@param ctx
+//	@return error
+func (p *Producer) Flush(ctx context.Context) error {
+	ticker := time.NewTicker(500 * time.Millisecond)
 	defer ticker.Stop()
 
-	startTime := time.Now()
-	lastReported := int64(0)
-
 	for {
-		sent := atomic.LoadInt64(&p.Tracker.sentCount)
-		success := atomic.LoadInt64(&p.Tracker.successCount)
-		failed := atomic.LoadInt64(&p.Tracker.failedCount)
-		completed := success + failed
-		queueLen := p.Producer.Len()
+		stats := p.Stats()
+		if stats.PendingCount == 0 && stats.QueueLen == 0 {
+			return nil
+		}
 
-		// 检查是否全部完成
-		if sent > 0 && completed == sent && queueLen == 0 {
-			elapsed := time.Since(startTime)
-			backpressureHits := atomic.LoadInt64(&p.Tracker.backpressureHit)
-
-			fmt.Printf("\n 全部完成! 总数: %d, 成功: %d, 失败: %d, 耗时: %v\n",
-				sent, success, failed, elapsed)
-			fmt.Printf(" 背压统计: 触发 %d 次\n", backpressureHits)
-
+		if remaining := p.raw.Flush(500); remaining == 0 {
 			return nil
 		}
 
 		select {
 		case <-ctx.Done():
-			return fmt.Errorf(" 超时: 发送 %d 条，完成 %d 条 (成功 %d, 失败 %d), 队列中 %d 条",
-				sent, completed, success, failed, queueLen)
-
+			return ctx.Err()
 		case <-ticker.C:
-			// 只在进度变化时打印
-			if completed != lastReported {
-				pending := sent - completed
-				progress := float64(completed) / float64(sent) * 100
-				elapsed := time.Since(startTime)
+		}
+	}
+}
 
-				// 计算速率
-				rate := float64(completed) / elapsed.Seconds()
+// Stats
+//
+//	@Description: 获取当前 Producer 的发送统计信息
+//	@receiver p
+//	@return ProducerStats
+func (p *Producer) Stats() ProducerStats {
+	sent := atomic.LoadInt64(&p.sentCount)
+	success := atomic.LoadInt64(&p.successCount)
+	failed := atomic.LoadInt64(&p.failedCount)
+	pending := sent - (success + failed)
+	if pending < 0 {
+		pending = 0
+	}
 
-				// 估算剩余时间
-				var eta time.Duration
-				if rate > 0 {
-					eta = time.Duration(float64(sent-completed)/rate) * time.Second
-				}
+	var queueLen int64
+	if p.raw != nil {
+		queueLen = int64(p.raw.Len())
+	}
 
-				backpressureHits := atomic.LoadInt64(&p.Tracker.backpressureHit)
+	return ProducerStats{
+		SentCount:        sent,
+		SuccessCount:     success,
+		FailedCount:      failed,
+		FatalErrorCount:  atomic.LoadInt64(&p.fatalErrorCount),
+		PendingCount:     pending,
+		QueueLen:         queueLen,
+		BackpressureHits: atomic.LoadInt64(&p.backpressureHits),
+	}
+}
 
-				fmt.Printf("进度: %.1f%% (%d/%d) | 成功: %d, 失败: %d | 待确认: %d | 队列: %d | 背压: %d 次 | 速率: %.0f msg/s | 耗时: %v | ETA: %v\n",
-					progress, completed, sent, success, failed, pending, queueLen, backpressureHits, rate,
-					elapsed.Round(time.Second), eta.Round(time.Second))
+// LastFatalError
+//
+//	@Description: 返回最近一次收到的 fatal Kafka error
+//	@receiver p
+//	@return error
+func (p *Producer) LastFatalError() error {
+	lastErr := p.lastFatalErr.Load()
+	if lastErr == nil {
+		return nil
+	}
+	return lastErr.(error)
+}
 
-				lastReported = completed
+// Close
+//
+//	@Description: 关闭 Producer
+//	@receiver p
+//	@return error
+func (p *Producer) Close() error {
+	p.closeOnce.Do(func() {
+		if p.raw != nil {
+			p.raw.Close()
+		}
+	})
+	return nil
+}
+
+// handleDeliveryReports
+//
+//	@Description:  Kafka 生产者的异步消息确认
+//	@receiver p
+func (p *Producer) handleDeliveryReports() {
+	for event := range p.raw.Events() {
+		switch e := event.(type) {
+		case *kafka.Message:
+			p.markDelivery(e.TopicPartition.Error)
+		case kafka.Error:
+			if e.IsFatal() {
+				p.markFatalError(e)
 			}
 		}
 	}
 }
 
-// GetStats 获取统计信息
-func (p *Producer) GetStats() (sent, success, failed, backpressureHits int64) {
-	return p.Tracker.GetStats()
+// markSent
+//
+//	@Description: 记录一条消息已被 Producer 接受
+//	@receiver p
+func (p *Producer) markSent() {
+	atomic.AddInt64(&p.sentCount, 1)
 }
 
-// Close 关闭 Producer
-func (p *Producer) Close() {
-	p.Producer.Close()
+// markDelivery
+//
+//	@Description: 根据 delivery report 更新成功或失败统计
+//	@receiver p
+//	@param err
+func (p *Producer) markDelivery(err error) {
+	if err != nil {
+		atomic.AddInt64(&p.failedCount, 1)
+		return
+	}
+	atomic.AddInt64(&p.successCount, 1)
+}
+
+// markFatalError
+//
+//	@Description: 记录 producer 级别的 fatal 错误，不参与消息发送失败统计
+//	@receiver p
+//	@param err
+func (p *Producer) markFatalError(err error) {
+	if err == nil {
+		return
+	}
+	atomic.AddInt64(&p.fatalErrorCount, 1)
+	p.lastFatalErr.Store(err)
+}
+
+// toKafkaHeaders
+//
+//	@Description: 将 map 结构的 headers 转换为 Kafka 原生 headers
+//	@param headers
+//	@return []kafka.Header
+func toKafkaHeaders(headers map[string]string) []kafka.Header {
+	if len(headers) == 0 {
+		return nil
+	}
+
+	result := make([]kafka.Header, 0, len(headers))
+	for key, value := range headers {
+		result = append(result, kafka.Header{
+			Key:   key,
+			Value: []byte(value),
+		})
+	}
+	return result
 }

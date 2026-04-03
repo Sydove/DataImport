@@ -1,13 +1,19 @@
 package es
 
 import (
-	_ "DataImport/internal/pkg/config"
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
+	"runtime"
 	"testing"
+
+	"github.com/spf13/viper"
 )
 
 func TestES(t *testing.T) {
+	loadIntegrationConfig(t)
+
 	// 初始化客户端
 	esClient := NewESClient()
 	fmt.Println(esClient)
@@ -58,4 +64,23 @@ func TestES(t *testing.T) {
 	}
 	fmt.Printf("%#v\n", total)
 
+}
+
+func loadIntegrationConfig(t *testing.T) {
+	t.Helper()
+
+	if os.Getenv("ES_INTEGRATION_TEST") != "1" {
+		t.Skip("set ES_INTEGRATION_TEST=1 to run Elasticsearch integration test")
+	}
+
+	_, filename, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("cannot resolve integration test path")
+	}
+
+	configPath := filepath.Join(filepath.Dir(filename), "..", "..", "..", "config", "config.yaml")
+	viper.SetConfigFile(configPath)
+	if err := viper.ReadInConfig(); err != nil {
+		t.Fatalf("read config failed: %v", err)
+	}
 }

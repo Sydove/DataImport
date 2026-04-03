@@ -1,58 +1,168 @@
-package kafka
+package newkafka
 
 import (
+	"context"
+	"fmt"
 	"time"
+
+	"github.com/confluentinc/confluent-kafka-go/kafka"
 )
 
-// Message Kafka 消息结构
 type Message struct {
-	ID   string
-	Host string
-	Port string
+	Topic     string
+	Key       []byte
+	Value     []byte
+	Partition *int32
+	Headers   map[string]string
 }
 
-// FailedMessage 失败消息详情
-type FailedMessage struct {
-	Value string
-	Error error
-	Time  time.Time
+// validate
+//
+//	@Description: 校验消息体最基本的发送条件
+//	@receiver m
+//	@return error
+func (m Message) validate() error {
+	if m.Topic == "" {
+		return fmt.Errorf("message topic is required")
+	}
+	return nil
 }
 
-// ProducerTracker 用于跟踪 Producer 发送状态
-type ProducerTracker struct {
-	sentCount       int64 // 已发送消息数
-	successCount    int64 // 成功确认数
-	failedCount     int64 // 失败数
-	maxPending      int64 // 最大待确认消息数（背压阈值）
-	backpressureHit int64 // 背压触发次数
-}
+type HandlerFunc func(ctx context.Context, msg *Message) error
 
-// GetStats 获取统计信息
-func (pt *ProducerTracker) GetStats() (sent, success, failed, backpressureHits int64) {
-	return pt.sentCount, pt.successCount, pt.failedCount, pt.backpressureHit
-}
-
-// ProducerConfig Producer 配置
-type ProducerConfig struct {
-	CompressionType string // 压缩类型：snappy, lz4, gzip
-	BatchSize       int    // 批量大小（字节）
-	LingerMs        int    // 等待时间（毫秒）
-	Acks            string // 确认级别：0, 1, all
-	MaxPending      int64  // 最大待确认消息数（背压阈值）
-}
-
-// ConsumerConfig Consumer 配置
-type ConsumerConfig struct {
-	GroupID         string   // Consumer Group ID
-	Topics          []string // 订阅的 Topic 列表
-	AutoOffsetReset string   // earliest(最早的消息开始读)或latest(最新的消息) 指定消费者在启动时或遇到无效偏移量（Offset）时的初始消费位置策略.只有在消费者首次启动或者offset被kafka删除后生效
-	CommitBatchSize int      // 批量提交大小
-}
-
-// TopicConfig Topic 配置
-type TopicConfig struct {
-	Name              string // Topic 名称
-	NumPartitions     int    // 分区数
-	ReplicationFactor int    // 副本因子
+type TopicSpec struct {
+	Name              string
+	NumPartitions     int
+	ReplicationFactor int
 	ConfigMap         map[string]string
+}
+
+type TopicOffset struct {
+	Topic     string
+	Partition int32
+	Offset    kafka.Offset
+}
+
+type ProducerOptions struct {
+	CompressionType       string
+	BatchSize             int
+	LingerMs              int
+	Acks                  string
+	MaxPending            int64
+	QueueMaxMessages      int
+	QueueMaxKBytes        int
+	EnableIdempotence     bool
+	RequestTimeoutMs      int
+	MessageTimeoutMs      int
+	SocketTimeoutMs       int
+	Retries               int
+	RetryBackoffMs        int
+	BackpressureWait      time.Duration
+	BackpressureThreshold int
+}
+
+// withDefaults
+//
+//	@Description: 为 Producer 配置补充默认值
+//	@receiver o
+//	@return ProducerOptions
+func (o ProducerOptions) withDefaults() ProducerOptions {
+	if o.CompressionType == "" {
+		o.CompressionType = "snappy"
+	}
+	if o.BatchSize == 0 {
+		o.BatchSize = 65536
+	}
+	if o.LingerMs == 0 {
+		o.LingerMs = 10
+	}
+	if o.Acks == "" {
+		o.Acks = "all"
+	}
+	if o.MaxPending == 0 {
+		o.MaxPending = 5000
+	}
+	if o.QueueMaxMessages == 0 {
+		o.QueueMaxMessages = 10000
+	}
+	if o.QueueMaxKBytes == 0 {
+		o.QueueMaxKBytes = 65536
+	}
+	if !o.EnableIdempotence {
+		o.EnableIdempotence = true
+	}
+	if o.RequestTimeoutMs == 0 {
+		o.RequestTimeoutMs = 60000
+	}
+	if o.MessageTimeoutMs == 0 {
+		o.MessageTimeoutMs = 120000
+	}
+	if o.SocketTimeoutMs == 0 {
+		o.SocketTimeoutMs = 60000
+	}
+	if o.Retries == 0 {
+		o.Retries = 5
+	}
+	if o.RetryBackoffMs == 0 {
+		o.RetryBackoffMs = 100
+	}
+	if o.BackpressureWait == 0 {
+		o.BackpressureWait = 10 * time.Millisecond
+	}
+	if o.BackpressureThreshold == 0 {
+		o.BackpressureThreshold = 1
+	}
+	return o
+}
+
+type ProducerStats struct {
+	SentCount        int64
+	SuccessCount     int64
+	FailedCount      int64
+	FatalErrorCount  int64
+	PendingCount     int64
+	QueueLen         int64
+	BackpressureHits int64
+}
+
+type ConsumerOptions struct {
+	GroupID          string
+	Topics           []string
+	AutoOffsetReset  string
+	CommitBatchSize  int
+	CommitInterval   time.Duration
+	PollTimeout      time.Duration
+	EnableAutoCommit bool
+}
+
+// withDefaults
+//
+//	@Description: 为 Consumer 配置补充默认值
+//	@receiver o
+//	@return ConsumerOptions
+func (o ConsumerOptions) withDefaults() ConsumerOptions {
+	if o.AutoOffsetReset == "" {
+		o.AutoOffsetReset = "earliest"
+	}
+	if o.CommitBatchSize == 0 {
+		o.CommitBatchSize = 100
+	}
+	if o.CommitInterval == 0 {
+		o.CommitInterval = 5 * time.Second
+	}
+	if o.PollTimeout == 0 {
+		o.PollTimeout = 500 * time.Millisecond
+	}
+	return o
+}
+
+type BrokerInfo struct {
+	ID   int
+	Host string
+	Port int
+}
+
+type ClusterMetadata struct {
+	Brokers []BrokerInfo
+	Topics  []string
 }

@@ -1,121 +1,203 @@
-package kafka
+package newkafka
 
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/confluentinc/confluent-kafka-go/kafka"
 )
 
-// CreateTopic 创建 Topic
-func (c *Client) CreateTopic(config TopicConfig) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+type Admin struct {
+	raw             *kafka.AdminClient
+	metadataTimeout time.Duration
+	closeOnce       sync.Once
+}
 
-	_, err := c.adminClient.CreateTopics(
-		ctx,
-		[]kafka.TopicSpecification{{
-			Topic:             config.Name,
-			NumPartitions:     config.NumPartitions,
-			ReplicationFactor: config.ReplicationFactor,
-			Config:            config.ConfigMap,
-		}},
-	)
-
+// newAdmin
+//
+//	@Description: 创建底层 Kafka Admin Client 封装
+//	@param baseConfig
+//	@param metadataTimeout
+//	@return *Admin
+//	@return error
+func newAdmin(baseConfig *kafka.ConfigMap, metadataTimeout time.Duration) (*Admin, error) {
+	rawAdmin, err := kafka.NewAdminClient(baseConfig)
 	if err != nil {
-		return fmt.Errorf("创建 Topic 失败: %w", err)
+		return nil, fmt.Errorf("create kafka admin client: %w", err)
 	}
 
-	fmt.Printf("Topic '%s' 创建成功 (分区: %d, 副本: %d)\n",
-		config.Name, config.NumPartitions, config.ReplicationFactor)
+	if metadataTimeout == 0 {
+		metadataTimeout = 5 * time.Second
+	}
+
+	return &Admin{
+		raw:             rawAdmin,
+		metadataTimeout: metadataTimeout,
+	}, nil
+}
+
+// EnsureTopic
+//
+//	@Description: 确保指定 Topic 存在，不存在时自动创建
+//	@receiver a
+//	@param ctx
+//	@param spec
+//	@return error
+func (a *Admin) EnsureTopic(ctx context.Context, spec TopicSpec) error {
+	if spec.Name == "" {
+		return fmt.Errorf("topic name is required")
+	}
+
+	exists, err := a.TopicExists(spec.Name)
+	if err != nil {
+		return err
+	}
+	if exists {
+		return nil
+	}
+
+	results, err := a.raw.CreateTopics(ctx, []kafka.TopicSpecification{{
+		Topic:             spec.Name,
+		NumPartitions:     spec.NumPartitions,
+		ReplicationFactor: spec.ReplicationFactor,
+		Config:            spec.ConfigMap,
+	}})
+	if err != nil {
+		return fmt.Errorf("create topic %s: %w", spec.Name, err)
+	}
+	if len(results) == 0 {
+		return nil
+	}
+	if results[0].Error.Code() != kafka.ErrNoError && results[0].Error.Code() != kafka.ErrTopicAlreadyExists {
+		return fmt.Errorf("create topic %s: %s", spec.Name, results[0].Error.String())
+	}
 	return nil
 }
 
-// DeleteTopic 删除 Topic
-func (c *Client) DeleteTopic(topicName string) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	_, err := c.adminClient.DeleteTopics(
-		ctx,
-		[]string{topicName},
-		kafka.SetAdminOperationTimeout(5000),
-	)
-
+// DeleteTopic
+//
+//	@Description: 删除指定 Topic
+//	@receiver a
+//	@param ctx
+//	@param name
+//	@return error
+func (a *Admin) DeleteTopic(ctx context.Context, name string) error {
+	results, err := a.raw.DeleteTopics(ctx, []string{name}, kafka.SetAdminOperationTimeout(a.metadataTimeout))
 	if err != nil {
-		return fmt.Errorf("删除 Topic 失败: %w", err)
+		return fmt.Errorf("delete topic %s: %w", name, err)
 	}
-
-	fmt.Printf("Topic '%s' 删除成功\n", topicName)
+	if len(results) == 0 {
+		return nil
+	}
+	if results[0].Error.Code() != kafka.ErrNoError {
+		return fmt.Errorf("delete topic %s: %s", name, results[0].Error.String())
+	}
 	return nil
 }
 
-// GetClusterMetadata 获取集群信息
-func (c *Client) GetClusterMetadata() ([]Message, error) {
-	meta, err := c.adminClient.GetMetadata(nil, true, 5000)
-	if err != nil {
-		return nil, fmt.Errorf("获取集群元数据失败: %w", err)
-	}
-
-	fmt.Printf("Broker 数量: %d\n", len(meta.Brokers))
-
-	results := make([]Message, 0)
-	for _, b := range meta.Brokers {
-		results = append(results, Message{
-			ID:   fmt.Sprintf("%d", b.ID),
-			Host: b.Host,
-			Port: fmt.Sprintf("%d", b.Port),
-		})
-		fmt.Printf("  - Broker %d: %s:%d\n", b.ID, b.Host, b.Port)
-	}
-
-	fmt.Printf("Topic 数量: %d\n", len(meta.Topics))
-	for topicName := range meta.Topics {
-		fmt.Printf("  - Topic: %s\n", topicName)
-	}
-
-	return results, nil
-}
-
-// ListTopics 列出所有 Topic
-func (c *Client) ListTopics() ([]string, error) {
-	meta, err := c.adminClient.GetMetadata(nil, true, 5000)
-	if err != nil {
-		return nil, fmt.Errorf("获取 Topic 列表失败: %w", err)
-	}
-
-	topics := make([]string, 0, len(meta.Topics))
-	for topicName := range meta.Topics {
-		topics = append(topics, topicName)
-	}
-
-	return topics, nil
-}
-
-// CreateConsumer 创建 Consumer
-func (c *Client) CreateConsumer(config ConsumerConfig, consumerID int, stopCtx context.Context) (*Consumer, error) {
-	consumer, err := NewConsumer(config, consumerID, stopCtx)
-	if err != nil {
-		return nil, err
-	}
-
-	c.addConsumer(consumer)
-	return consumer, nil
-}
-
-func (c *Client) WaitTopicReady(topic string, timeout time.Duration) error {
+// WaitTopicReady
+//
+//	@Description: 等待 Topic 元数据可用
+//	@receiver a
+//	@param topic
+//	@param timeout
+//	@return error
+func (a *Admin) WaitTopicReady(topic string, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
-
 	for time.Now().Before(deadline) {
-		md, err := c.adminClient.GetMetadata(&topic, false, 5_000)
+		md, err := a.raw.GetMetadata(&topic, false, int(a.metadataTimeout.Milliseconds()))
 		if err == nil {
 			if t, ok := md.Topics[topic]; ok && t.Error.Code() == kafka.ErrNoError {
-				// topic 存在且无错误
 				return nil
 			}
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
 	return fmt.Errorf("topic %s not ready", topic)
+}
+
+// TopicExists
+//
+//	@Description: 检查指定 Topic 是否存在
+//	@receiver a
+//	@param topic
+//	@return bool
+//	@return error
+func (a *Admin) TopicExists(topic string) (bool, error) {
+	md, err := a.raw.GetMetadata(&topic, false, int(a.metadataTimeout.Milliseconds()))
+	if err != nil {
+		return false, fmt.Errorf("get topic metadata %s: %w", topic, err)
+	}
+
+	topicMeta, ok := md.Topics[topic]
+	if !ok {
+		return false, nil
+	}
+
+	return topicMeta.Error.Code() == kafka.ErrNoError, nil
+}
+
+// ListTopics
+//
+//	@Description: 列出当前集群的全部 Topic 名称
+//	@receiver a
+//	@return []string
+//	@return error
+func (a *Admin) ListTopics() ([]string, error) {
+	md, err := a.raw.GetMetadata(nil, true, int(a.metadataTimeout.Milliseconds()))
+	if err != nil {
+		return nil, fmt.Errorf("list kafka topics: %w", err)
+	}
+
+	topics := make([]string, 0, len(md.Topics))
+	for topic := range md.Topics {
+		topics = append(topics, topic)
+	}
+	return topics, nil
+
+}
+
+// Metadata
+//
+//	@Description: 获取当前集群的 brokers 和 topics 元信息
+//	@receiver a
+//	@return ClusterMetadata
+//	@return error
+func (a *Admin) Metadata() (ClusterMetadata, error) {
+	md, err := a.raw.GetMetadata(nil, true, int(a.metadataTimeout.Milliseconds()))
+	if err != nil {
+		return ClusterMetadata{}, fmt.Errorf("get kafka metadata: %w", err)
+	}
+
+	result := ClusterMetadata{
+		Brokers: make([]BrokerInfo, 0, len(md.Brokers)),
+		Topics:  make([]string, 0, len(md.Topics)),
+	}
+
+	for _, broker := range md.Brokers {
+		result.Brokers = append(result.Brokers, BrokerInfo{
+			ID:   int(broker.ID),
+			Host: broker.Host,
+			Port: broker.Port,
+		})
+	}
+	for topic := range md.Topics {
+		result.Topics = append(result.Topics, topic)
+	}
+
+	return result, nil
+}
+
+// Close
+//
+//	@Description: 关闭 Admin Client
+//	@receiver a
+//	@return error
+func (a *Admin) Close() error {
+	a.closeOnce.Do(func() {
+		a.raw.Close()
+	})
+	return nil
 }

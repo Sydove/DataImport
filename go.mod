@@ -1,25 +1,29 @@
 module DataImport
 
-go 1.24.2
+go 1.26
 
 require (
 	github.com/confluentinc/confluent-kafka-go v1.9.2
+	github.com/elastic/go-elasticsearch/v8 v8.19.0
+	github.com/gomodule/redigo v1.9.3
 	github.com/jackc/pgx/v5 v5.7.6
-	github.com/lib/pq v1.10.9
-	github.com/redis/go-redis/v9 v9.14.0
 	github.com/spf13/viper v1.21.0
+	golang.org/x/sync v0.16.0
 )
 
 require (
-	github.com/cespare/xxhash/v2 v2.3.0 // indirect
-	github.com/dgryski/go-rendezvous v0.0.0-20200823014737-9f7001d12a5f // indirect
+	github.com/chromedp/cdproto v0.0.0-20260328224638-b7b298a31867 // indirect
+	github.com/chromedp/chromedp v0.15.1 // indirect
+	github.com/chromedp/sysutil v1.1.0 // indirect
 	github.com/elastic/elastic-transport-go/v8 v8.7.0 // indirect
-	github.com/elastic/go-elasticsearch/v8 v8.19.0 // indirect
 	github.com/fsnotify/fsnotify v1.9.0 // indirect
+	github.com/go-json-experiment/json v0.0.0-20260214004413-d219187c3433 // indirect
 	github.com/go-logr/logr v1.4.2 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/go-viper/mapstructure/v2 v2.4.0 // indirect
-	github.com/gomodule/redigo v1.9.3 // indirect
+	github.com/gobwas/httphead v0.1.0 // indirect
+	github.com/gobwas/pool v0.2.1 // indirect
+	github.com/gobwas/ws v1.4.0 // indirect
 	github.com/jackc/pgpassfile v1.0.0 // indirect
 	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect
 	github.com/jackc/puddle/v2 v2.2.2 // indirect
@@ -35,7 +39,6 @@ require (
 	go.opentelemetry.io/otel/trace v1.28.0 // indirect
 	go.yaml.in/yaml/v3 v3.0.4 // indirect
 	golang.org/x/crypto v0.37.0 // indirect
-	golang.org/x/sync v0.16.0 // indirect
-	golang.org/x/sys v0.32.0 // indirect
+	golang.org/x/sys v0.42.0 // indirect
 	golang.org/x/text v0.28.0 // indirect
 )

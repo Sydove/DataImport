@@ -1,153 +1,255 @@
-package kafka
+package newkafka
 
 import (
-	"DataImport/internal/pkg/es"
 	"context"
+	"errors"
 	"fmt"
-	"sync/atomic"
+	"sync"
 	"time"
 
 	"github.com/confluentinc/confluent-kafka-go/kafka"
 )
 
-// Consumer Kafka Consumer 包装
 type Consumer struct {
-	consumer *kafka.Consumer
-	config   ConsumerConfig
-	StopCtx  context.Context
+	raw       *kafka.Consumer
+	opts      ConsumerOptions
+	closeOnce sync.Once
 }
 
-// NewConsumer 创建 Consumer
-func NewConsumer(config ConsumerConfig, consumerID int, stopCtx context.Context) (*Consumer, error) {
-	kafkaConfig := getBaseConfig()
-
-	// 设置 Consumer 配置
-	kafkaConfig.SetKey("group.id", config.GroupID)
-	kafkaConfig.SetKey("client.id", fmt.Sprintf("consumer-%d", consumerID))
-	kafkaConfig.SetKey("auto.offset.reset", config.AutoOffsetReset)
-	kafkaConfig.SetKey("go.events.channel.enable", true)
-	kafkaConfig.SetKey("go.application.rebalance.enable", true)
-
-	consumer, err := kafka.NewConsumer(kafkaConfig)
-	if err != nil {
-		return nil, fmt.Errorf("创建 Consumer 失败: %w", err)
+// newConsumer
+//
+//	@Description: 创建底层 Kafka Consumer 封装
+//	@param baseConfig
+//	@param opts
+//	@return *Consumer
+//	@return error
+func newConsumer(baseConfig *kafka.ConfigMap, opts ConsumerOptions) (*Consumer, error) {
+	opts = opts.withDefaults()
+	if opts.GroupID == "" {
+		return nil, fmt.Errorf("consumer group id is required")
+	}
+	if len(opts.Topics) == 0 {
+		return nil, fmt.Errorf("consumer topics is empty")
 	}
 
-	err = consumer.SubscribeTopics(config.Topics, nil)
+	baseConfig.SetKey("group.id", opts.GroupID)
+	baseConfig.SetKey("auto.offset.reset", opts.AutoOffsetReset)
+	baseConfig.SetKey("enable.auto.commit", opts.EnableAutoCommit)
+	baseConfig.SetKey("go.application.rebalance.enable", true)
+
+	rawConsumer, err := kafka.NewConsumer(baseConfig)
 	if err != nil {
-		consumer.Close()
-		return nil, fmt.Errorf("订阅 Topic 失败: %w", err)
+		return nil, fmt.Errorf("create kafka consumer: %w", err)
 	}
+
+	if err := rawConsumer.SubscribeTopics(opts.Topics, nil); err != nil {
+		rawConsumer.Close()
+		return nil, fmt.Errorf("subscribe kafka topics: %w", err)
+	}
+
 	return &Consumer{
-		consumer: consumer,
-		config:   config,
-		StopCtx:  stopCtx,
+		raw:  rawConsumer,
+		opts: opts,
 	}, nil
 }
 
-// StartConsuming 开始消费消息
-func (c *Consumer) StartConsuming(consumerID int, handler func(consumerID int, msg *kafka.Message, esClient *es.ESClient, kafkaClient *Client) error, total *int64, esClient *es.ESClient, kafkaClient *Client) error {
-	messageCount := 0
-	offsetMap := make(map[kafka.TopicPartition]kafka.Offset)
-	ticker := time.NewTicker(10 * time.Second)
-	defer ticker.Stop()
-	for {
-		select {
-		case ev := <-c.consumer.Events():
-			switch e := ev.(type) {
-			case *kafka.Message:
-				if string(e.Value) == "__EOF__" {
-					fmt.Println("程序停止,检查是否还有offset需要提交")
-					var offsets []kafka.TopicPartition
-					for tp, off := range offsetMap {
-						tp.Offset = off
-						offsets = append(offsets, tp)
-					}
-					if len(offsets) > 0 {
-						if _, err := c.consumer.CommitOffsets(offsets); err != nil {
-							fmt.Println("提交失败")
-						} else {
-							fmt.Println("结束程序批量提交成功", offsets)
-						}
-					}
-					return nil
-				}
-				// 处理消息
-				if handler != nil {
-					if err := handler(consumerID, e, esClient, kafkaClient); err != nil {
-						fmt.Printf("处理消息失败: %v\n", err)
-					}
-				}
-				// 增加总消息数
-				atomic.AddInt64(total, 1)
-
-				// 保存该分区最新 offset
-				tp := e.TopicPartition
-				tp.Offset = e.TopicPartition.Offset + 1
-				offsetMap[tp] = tp.Offset
-				messageCount++
-
-				// 达到批量数量，提交一次
-				if messageCount >= c.config.CommitBatchSize {
-					var offsets []kafka.TopicPartition
-					for tp, off := range offsetMap {
-						tp.Offset = off
-						offsets = append(offsets, tp)
-					}
-					if len(offsets) > 0 {
-						_, err := c.consumer.CommitOffsets(offsets)
-						if err != nil {
-							fmt.Println("批量提交失败:", err)
-						} else {
-							fmt.Println("批量提交成功:", offsets)
-							offsetMap = make(map[kafka.TopicPartition]kafka.Offset)
-						}
-					}
-
-					// 清空计数
-					messageCount = 0
-				}
-
-			case kafka.AssignedPartitions:
-				fmt.Println("分配分区:", e.Partitions)
-				c.consumer.Assign(e.Partitions)
-
-			case kafka.RevokedPartitions:
-				fmt.Println("回收分区")
-				c.consumer.Unassign()
-
-			case kafka.Error:
-
-				fmt.Println("Kafka Error:", e)
-			}
-		case <-ticker.C:
-			//定时提交
-			var offsets []kafka.TopicPartition
-			for tp, off := range offsetMap {
-				tp.Offset = off
-				offsets = append(offsets, tp)
-			}
-			if len(offsets) > 0 {
-				if _, err := c.consumer.CommitOffsets(offsets); err != nil {
-					fmt.Println("提交失败", err)
-				} else {
-					fmt.Println("定时批量提交成功", offsets)
-					offsetMap = make(map[kafka.TopicPartition]kafka.Offset)
-				}
-			}
-			//case <-c.StopCtx.Done():
-
-		}
+// Run
+//
+//	@Description: 运行消费循环，handler 成功后按批次或定时提交 offset
+//	@receiver c
+//	@param ctx
+//	@param handler
+//	@return error
+func (c *Consumer) Run(ctx context.Context, handler HandlerFunc) error {
+	if handler == nil {
+		return fmt.Errorf("consumer handler is required")
 	}
 
+	pendingOffsets := make(map[string]TopicOffset)
+	processed := 0
+	commitTicker := time.NewTicker(c.opts.CommitInterval)
+	defer commitTicker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			if !c.opts.EnableAutoCommit {
+				if err := c.commitPending(pendingOffsets); err != nil && !isIgnorableCommitError(err) {
+					return err
+				}
+			}
+			return nil
+		case <-commitTicker.C:
+			// 定时提交用于兜底，避免低流量场景下 offset 长时间不落盘。
+			if !c.opts.EnableAutoCommit && processed > 0 {
+				if err := c.commitPending(pendingOffsets); err != nil && !isIgnorableCommitError(err) {
+					return err
+				}
+				pendingOffsets = make(map[string]TopicOffset)
+				processed = 0
+			}
+		default:
+		}
+
+		event := c.raw.Poll(int(c.opts.PollTimeout.Milliseconds()))
+		if event == nil {
+			continue
+		}
+
+		switch e := event.(type) {
+		case *kafka.Message:
+			msg := fromKafkaMessage(e)
+			if err := handler(ctx, &msg); err != nil {
+				return err
+			}
+
+			if c.opts.EnableAutoCommit {
+				continue
+			}
+
+			offset := TopicOffset{
+				Topic:     *e.TopicPartition.Topic,
+				Partition: e.TopicPartition.Partition,
+				Offset:    e.TopicPartition.Offset + 1,
+			}
+			pendingOffsets[offsetKey(offset)] = offset
+			processed++
+
+			if processed >= c.opts.CommitBatchSize {
+				// 达到批量阈值后提交，减少频繁 commit 带来的额外开销。
+				if err := c.commitPending(pendingOffsets); err != nil && !isIgnorableCommitError(err) {
+					return err
+				}
+				pendingOffsets = make(map[string]TopicOffset)
+				processed = 0
+			}
+		case kafka.AssignedPartitions:
+			if err := c.raw.Assign(e.Partitions); err != nil {
+				return fmt.Errorf("assign partitions: %w", err)
+			}
+		case kafka.RevokedPartitions:
+			if !c.opts.EnableAutoCommit {
+				if err := c.commitPending(pendingOffsets); err != nil && !isIgnorableCommitError(err) {
+					return err
+				}
+				pendingOffsets = make(map[string]TopicOffset)
+				processed = 0
+			}
+			c.raw.Unassign()
+		case kafka.Error:
+			if e.IsFatal() {
+				return fmt.Errorf("fatal kafka consumer error: %w", e)
+			}
+		}
+	}
 }
 
-// Close 关闭 Consumer
+// Commit
+//
+//	@Description: 手动提交一组 offset
+//	@receiver c
+//	@param ctx
+//	@param offsets
+//	@return error
+func (c *Consumer) Commit(_ context.Context, offsets ...TopicOffset) error {
+	if len(offsets) == 0 {
+		return nil
+	}
+
+	partitions := make([]kafka.TopicPartition, 0, len(offsets))
+	for _, offset := range offsets {
+		topic := offset.Topic
+		partitions = append(partitions, kafka.TopicPartition{
+			Topic:     &topic,
+			Partition: offset.Partition,
+			Offset:    offset.Offset,
+		})
+	}
+
+	if _, err := c.raw.CommitOffsets(partitions); err != nil {
+		return fmt.Errorf("commit kafka offsets: %w", err)
+	}
+	return nil
+}
+
+// Close
+//
+//	@Description: 关闭 Consumer
+//	@receiver c
+//	@return error
 func (c *Consumer) Close() error {
-	return c.consumer.Close()
+	var err error
+	c.closeOnce.Do(func() {
+		err = c.raw.Close()
+	})
+	return err
 }
 
-// GetConsumer 获取底层的 kafka.Consumer
-func (c *Consumer) GetConsumer() *kafka.Consumer {
-	return c.consumer
+// commitPending
+//
+//	@Description: 提交当前缓存的待提交 offset
+//	@receiver c
+//	@param pending
+//	@return error
+func (c *Consumer) commitPending(pending map[string]TopicOffset) error {
+	if len(pending) == 0 {
+		return nil
+	}
+
+	offsets := make([]TopicOffset, 0, len(pending))
+	for _, offset := range pending {
+		offsets = append(offsets, offset)
+	}
+
+	return c.Commit(context.Background(), offsets...)
+}
+
+// fromKafkaMessage
+//
+//	@Description: 将底层 Kafka Message 转换为模块内统一消息结构
+//	@param msg
+//	@return Message
+func fromKafkaMessage(msg *kafka.Message) Message {
+	result := Message{
+		Key:     msg.Key,
+		Value:   msg.Value,
+		Headers: make(map[string]string, len(msg.Headers)),
+	}
+
+	if msg.TopicPartition.Topic != nil {
+		result.Topic = *msg.TopicPartition.Topic
+	}
+
+	for _, header := range msg.Headers {
+		result.Headers[header.Key] = string(header.Value)
+	}
+
+	return result
+}
+
+// offsetKey
+//
+//	@Description: 生成 partition 维度的 offset 索引键
+//	@param offset
+//	@return string
+func offsetKey(offset TopicOffset) string {
+	return fmt.Sprintf("%s:%d", offset.Topic, offset.Partition)
+}
+
+func isIgnorableCommitError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	var kafkaErr kafka.Error
+	if !errors.As(err, &kafkaErr) {
+		return false
+	}
+
+	switch kafkaErr.Code() {
+	case kafka.ErrUnknownMemberID, kafka.ErrIllegalGeneration, kafka.ErrState:
+		return true
+	default:
+		return false
+	}
 }
