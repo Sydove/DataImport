@@ -90,15 +90,16 @@ func (p *Producer) Publish(ctx context.Context, msg Message) error {
 
 	kafkaMsg := &kafka.Message{
 		TopicPartition: kafka.TopicPartition{
-			Topic: &msg.Topic,
+			Topic:     &msg.Topic,
+			Partition: kafka.PartitionAny, // 必须设置,不然零值也是值
 		},
-		Key:     msg.Key,
+		//Key:     msg.Key,
 		Value:   msg.Value,
 		Headers: toKafkaHeaders(msg.Headers),
 	}
-	if msg.Partition != nil {
-		kafkaMsg.TopicPartition.Partition = *msg.Partition
-	}
+	//if msg.Partition != nil {
+	//	kafkaMsg.TopicPartition.Partition = *msg.Partition
+	//}
 
 	if err := p.raw.Produce(kafkaMsg, nil); err != nil {
 		return fmt.Errorf("publish kafka message: %w", err)

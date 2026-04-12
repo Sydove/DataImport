@@ -133,6 +133,10 @@ type ConsumerOptions struct {
 	CommitInterval   time.Duration
 	PollTimeout      time.Duration
 	EnableAutoCommit bool
+	MaxPollRecords   int
+	FetchMaxWait     time.Duration
+	WorkerCount      int
+	WorkQueueSize    int
 }
 
 // withDefaults
@@ -152,6 +156,18 @@ func (o ConsumerOptions) withDefaults() ConsumerOptions {
 	}
 	if o.PollTimeout == 0 {
 		o.PollTimeout = 500 * time.Millisecond
+	}
+	if o.MaxPollRecords == 0 {
+		o.MaxPollRecords = 50
+	}
+	if o.FetchMaxWait == 0 {
+		o.FetchMaxWait = 100 * time.Millisecond
+	}
+	if o.WorkerCount == 0 {
+		o.WorkerCount = 4
+	}
+	if o.WorkQueueSize == 0 {
+		o.WorkQueueSize = o.MaxPollRecords * 4
 	}
 	return o
 }

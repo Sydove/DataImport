@@ -201,6 +201,10 @@ func (c *Coordinator) runProducer(ctx context.Context) error {
 
 	startID := c.job.ResumeFromID
 	for {
+		if err := c.waitForPipelineCapacity(ctx); err != nil {
+			return c.flushProducerOnStop(err)
+		}
+
 		// 是否收到取消信号,则退出
 		select {
 		case <-ctx.Done():
@@ -235,7 +239,7 @@ func (c *Coordinator) runProducer(ctx context.Context) error {
 
 		if err := c.producer.Publish(ctx, newkafka.Message{
 			Topic: c.cfg.TopicName,
-			Key:   []byte(batch.BatchID),
+			Key:   nil,
 			Value: payload,
 		}); err != nil {
 			// 收到取消信号
@@ -253,6 +257,32 @@ func (c *Coordinator) runProducer(ctx context.Context) error {
 	}
 
 	return c.flushProducerOnStop(nil)
+}
+
+func (c *Coordinator) waitForPipelineCapacity(ctx context.Context) error {
+	if c.cfg.MaxPipelineBatches <= 0 {
+		return nil
+	}
+
+	wait := c.cfg.ProducerThrottleWait
+	if wait <= 0 {
+		wait = 100 * time.Millisecond
+	}
+
+	for {
+		backlog := c.stats.publishedBatches.Load() - c.stats.consumedBatches.Load()
+		if backlog < c.cfg.MaxPipelineBatches {
+			return nil
+		}
+
+		timer := time.NewTimer(wait)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
 }
 
 func (c *Coordinator) flushProducerOnStop(stopErr error) error {
@@ -288,6 +318,10 @@ func (c *Coordinator) runConsumer(ctx context.Context, workerID int) error {
 		CommitBatchSize:  c.cfg.CommitBatchSize,
 		CommitInterval:   c.cfg.CommitInterval,
 		EnableAutoCommit: false,
+		MaxPollRecords:   c.cfg.ConsumerBatchSize,
+		FetchMaxWait:     c.cfg.ConsumerBatchWait,
+		WorkerCount:      c.cfg.ConsumerPoolSize,
+		WorkQueueSize:    c.cfg.ConsumerQueueSize,
 	})
 	if err != nil {
 		return fmt.Errorf("create consumer-%d: %w", workerID, err)

@@ -2,3 +2,4 @@
 .DS_Store
 *.jsonl
 .gocache
+config/full_load_checkpoint.json

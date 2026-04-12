@@ -11,16 +11,10 @@ import (
 )
 
 func ensureTopics(ctx context.Context, admin *newkafka.Admin, cfg Config) error {
-	if cfg.RecreateTopics {
-		if err := deleteTopicIfExists(ctx, admin, cfg.TopicName); err != nil {
-			return err
-		}
-		if err := deleteTopicIfExists(ctx, admin, cfg.DLQTopicName); err != nil {
-			return err
-		}
+	if !cfg.RecreateTopics {
+		return nil
 	}
-
-	if err := admin.EnsureTopic(ctx, newkafka.TopicSpec{
+	if err := admin.RecreateTopic(ctx, newkafka.TopicSpec{
 		Name:              cfg.TopicName,
 		NumPartitions:     cfg.TopicPartitions,
 		ReplicationFactor: 1,
@@ -33,11 +27,11 @@ func ensureTopics(ctx context.Context, admin *newkafka.Admin, cfg Config) error 
 			"min.insync.replicas": "1",
 			"compression.type":    "snappy",
 		},
-	}); err != nil {
-		return fmt.Errorf("ensure topic %s: %w", cfg.TopicName, err)
+	}, 30*time.Second); err != nil {
+		return fmt.Errorf("recreate topic %s: %w", cfg.TopicName, err)
 	}
 
-	if err := admin.EnsureTopic(ctx, newkafka.TopicSpec{
+	if err := admin.RecreateTopic(ctx, newkafka.TopicSpec{
 		Name:              cfg.DLQTopicName,
 		NumPartitions:     cfg.DLQPartitions,
 		ReplicationFactor: 1,
@@ -50,8 +44,8 @@ func ensureTopics(ctx context.Context, admin *newkafka.Admin, cfg Config) error 
 			"min.insync.replicas": "1",
 			"compression.type":    "snappy",
 		},
-	}); err != nil {
-		return fmt.Errorf("ensure topic %s: %w", cfg.DLQTopicName, err)
+	}, 30*time.Second); err != nil {
+		return fmt.Errorf("recreate topic %s: %w", cfg.DLQTopicName, err)
 	}
 
 	if err := admin.WaitTopicReady(cfg.TopicName, 30*time.Second); err != nil {
@@ -59,20 +53,6 @@ func ensureTopics(ctx context.Context, admin *newkafka.Admin, cfg Config) error 
 	}
 	if err := admin.WaitTopicReady(cfg.DLQTopicName, 30*time.Second); err != nil {
 		return err
-	}
-	return nil
-}
-
-func deleteTopicIfExists(ctx context.Context, admin *newkafka.Admin, topic string) error {
-	exists, err := admin.TopicExists(topic)
-	if err != nil {
-		return fmt.Errorf("check topic %s: %w", topic, err)
-	}
-	if !exists {
-		return nil
-	}
-	if err := admin.DeleteTopic(ctx, topic); err != nil {
-		return fmt.Errorf("delete topic %s: %w", topic, err)
 	}
 	return nil
 }
