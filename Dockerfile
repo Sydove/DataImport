@@ -1,4 +1,4 @@
-FROM golang:1.24.2-bookworm AS builder
+FROM golang:1.26.0-bookworm AS builder
 
 WORKDIR /app
 
@@ -22,7 +22,7 @@ ENV GOARCH=amd64
 RUN go build \
     -ldflags="-s -w" \
     -o main \
-    ./cmd/synckafka
+    ./cmd/syncES
 
 
 FROM debian:bookworm-slim
@@ -38,7 +38,7 @@ RUN apt-get update && apt-get install -y \
 WORKDIR /app
 
 COPY --from=builder /app/main .
-COPY --from=builder /app/internal/config ./config
+COPY --from=builder /app/config ./config
 
 ENV CONFIG_PATH=/app/config
 
